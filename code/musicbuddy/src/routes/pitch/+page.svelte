@@ -32,7 +32,7 @@
 		return bestLag>0 ? sr/bestLag : -1;
 	}
 
-	let raf: number | null = null;   // note the null so “no frame yet” ≠ 0
+	let raf: number | null = null;   // note the null so "no frame yet" ≠ 0
 
 	onMount(async () => {
 		if (typeof window === 'undefined') return;   // SSR guard
@@ -48,6 +48,7 @@
 		} catch {
 			alert('⚠️ Microphone permission denied.');
 		}
+		generateRandomLine();
 	});
 
 	onDestroy(() => {
@@ -76,10 +77,62 @@
 		}
 		raf = requestAnimationFrame(tick);
 	}
+
+  /* ----------  VexFlow setup  ---------- */
+	import { Renderer, Stave, StaveNote, Voice, Formatter } from 'vexflow';
+	let vfDiv: HTMLDivElement;      // bind local <div> for the score
+
+	const NOTE_LETTERS = ['c', 'd', 'e', 'f', 'g', 'a', 'b']; //    lower-case
+	const OCTAVES      = [3,4];   // sensible alto-clef range (G3–F5)
+
+	function randomNote() {                  //   returns “d/4”
+   const letter = NOTE_LETTERS[Math.floor(Math.random() * NOTE_LETTERS.length)];
+   const octave = OCTAVES[Math.floor(Math.random() * OCTAVES.length)];
+   return `${letter}/${octave}`;
+ }
+
+	function generateRandomLine() {
+		if (!vfDiv) return;
+
+		/* clear any previous rendering */
+		vfDiv.innerHTML = '';
+
+		/* basic renderer */
+		const renderer = new Renderer(vfDiv, Renderer.Backends.SVG);
+		renderer.resize(600, 140);
+		const context = renderer.getContext();
+
+		/* stave with alto clef */
+		const stave = new Stave(10, 20, 580);
+		stave.addClef('alto').addTimeSignature('8/4');
+		stave.setContext(context).draw();
+
+		/* 8 quarter-notes */
+		const notes = Array.from({ length: 8 }, () =>
+   new StaveNote({
+    keys: [randomNote()],                 //    “d/4”  ✔
+     duration: 'q',
+     clef: 'alto'                         // tell VexFlow we’re on alto
+   })
+ );
+
+		/* voice = 8 beats of 1/4 each */
+		const voice = new Voice({ numBeats: 8, beatValue: 4 });
+		voice.addTickables(notes);
+
+		/* format & draw */
+		new Formatter().joinVoices([voice]).format([voice], 520);
+		voice.draw(context, stave);
+	}
 </script>
 
 <div class="flex flex-col items-center justify-center h-screen gap-6 text-center">
 	<h1 class="text-3xl font-bold">Mic Pitch Detector</h1>
+
+	<div bind:this={vfDiv}></div>
+	<button on:click={generateRandomLine} class="my-4 rounded-md bg-blue-500 px-4 py-2 text-white">
+		New Staff
+	</button>
 
 	<div class="flex flex-col items-center gap-1">
 		<div class="text-6xl font-mono">{freq || '--'} Hz</div>
