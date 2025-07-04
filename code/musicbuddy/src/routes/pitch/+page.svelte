@@ -3,9 +3,9 @@
 
 	/* --- constants & helpers --- */
 	const NOTES = ['C','C♯','D','D♯','E','F','F♯','G','G♯','A','A♯','B'];
-	const BUF_SIZE = 1024, HIST = 5, HOLD_MS = 3000;
+	const BUF_SIZE = 512, HIST = 5, HOLD_MS = 3000;
 	const MIN_FREQ = 80;
-	const MAX_FREQ = 1200;
+	const MAX_FREQ = 2000;
 	const f2n = (f:number)=>`${NOTES[Math.round(12*Math.log2(f/440)+69)%12]}${Math.floor((Math.round(12*Math.log2(f/440)+69))/12)-1}`;
 	const rms2db = (r:number)=>20*Math.log10(r||1e-10);
 
@@ -31,6 +31,16 @@ function isSubHarmonic(cand: number, ref: number): boolean {
     Math.abs(cand * 4 - ref) / ref < TOL      // ¼ ×
   );
 }
+/**
+ * Quick autocorrelation at a single lag.
+ * Returns the *unnormalised* correlation energy.
+ */
+ function correlationAt(buf: Float32Array, lag: number): number {
+    let sum = 0;
+    const n = buf.length - lag;      // keep indices in-range
+    for (let i = 0; i < n; i++) sum += buf[i] * buf[i + lag];
+    return sum;
+}
 
 
 	function detect(buf: Float32Array, sr: number): number {
@@ -50,11 +60,20 @@ function isSubHarmonic(cand: number, ref: number): boolean {
   let bestCorr = 0;
   let bestLag  = -1;
 
+  let last = 0, rising = false;
   for (let lag = minLag; lag <= searchLimit; lag++) {
-    let corr = 0;
-    for (let i = 0; i < halfBuf; i++) corr += buf[i] * buf[i + lag];
-    if (corr > bestCorr) { bestCorr = corr; bestLag = lag; }
+  let corr = 0;
+  for (let i = 0; i < halfBuf; i++) corr += buf[i] * buf[i + lag];
+
+  if (!rising && corr > last) rising = true;     // we're climbing
+  if (rising && corr < last) {                   // passed a local max
+    // local maximum at lag-1
+    if (bestLag === -1) { bestLag = lag - 1; bestCorr = last; break; }
+    rising = false;
   }
+  last = corr;
+}
+
 
   /* 3. confidence guard ------------------------------------------------- */
   const CONF_THRESH = 0.35;          // relaxed threshold
@@ -62,9 +81,15 @@ function isSubHarmonic(cand: number, ref: number): boolean {
   if (bestLag < 0 || bestCorr / selfCorr < CONF_THRESH) return -1;
 
   /* 4. convert lag → frequency & hard-cap filter ------------------------ */
-  const candidate = sr / bestLag;
+  let candidate = sr / bestLag;
   if (candidate >= MAX_FREQ) return -1;  // discard 1200 Hz glitches
 
+  const lagOctUp = Math.round(bestLag / 2);               // half lag → ×2 freq
+  if (lagOctUp >= Math.floor(sr / MAX_FREQ)) {            // still in window?
+    const corrOct = correlationAt(buf, lagOctUp);         // energy @ octave-up
+    if (corrOct > 0.9 * bestCorr) candidate *= 2;         // bump if similar
+  }
+  
   return candidate;                      // valid pitch
 }
 
@@ -96,7 +121,7 @@ function isSubHarmonic(cand: number, ref: number): boolean {
 		}
 		ctx?.close();
 	});
-	const GREEN = '#16a34a';          // Tailwind “green-600”; tweak if desired
+	const GREEN = '#16a34a';          // Tailwind "green-600"; tweak if desired
 
 function markNoteGreen(note: StaveNote): void {
   note.setStyle({
@@ -138,8 +163,8 @@ function isClearlyDifferent(a: number, b: number): boolean {
 
 let matchedFreq = 0;             // freq of the last note we turned green
 let gate: 'READY' | 'WAIT_NEXT' | 'WAIT_ATTACK' = 'READY';
-let readyToMatch = true;     // true  ⇒ we’re allowed to judge this note
-let waitingForSilence = false; // aids “dip-then-rise” detection
+let readyToMatch = true;     // true  ⇒ we're allowed to judge this note
+let waitingForSilence = false; // aids "dip-then-rise" detection
 let i = 0;
 function tick(): void {
   if (!running) return;
@@ -216,7 +241,7 @@ else if (Date.now() - lastHeard > HOLD_MS) {
 	const NOTE_LETTERS = ['c', 'd', 'e', 'f', 'g', 'a', 'b']; //    lower-case
 	const OCTAVES      = [3,4];   // sensible alto-clef range (G3–F5)
 
-	function randomNote() {                  //   returns “d/4”
+	function randomNote() {                  //   returns "d/4"
    const letter = NOTE_LETTERS[Math.floor(Math.random() * NOTE_LETTERS.length)];
    const octave = OCTAVES[Math.floor(Math.random() * OCTAVES.length)];
    line.push(`${letter.toUpperCase()}${octave}`);
@@ -244,9 +269,9 @@ else if (Date.now() - lastHeard > HOLD_MS) {
 		/* 8 quarter-notes */
 		notes = Array.from({ length: 8 }, () =>
    new StaveNote({
-    keys: [randomNote()],                 //    “d/4”  ✔
+    keys: [randomNote()],                 //    "d/4"  ✔
      duration: 'q',
-     clef: 'alto'                         // tell VexFlow we’re on alto
+     clef: 'alto'                         // tell VexFlow we're on alto
    })
  );
 
@@ -261,6 +286,17 @@ else if (Date.now() - lastHeard > HOLD_MS) {
 
 
 	}		
+
+function testButtonClicked() {
+  if (!vfDiv) return;
+  vfDiv.innerHTML = '';
+  const renderer = new Renderer(vfDiv, Renderer.Backends.SVG);
+  renderer.resize(600, 140);
+  const context = renderer.getContext();
+  const stave = new Stave(10, 20, 580);
+  stave.addClef('alto').addTimeSignature('8/4');
+  stave.setContext(context).draw();
+}
 </script>
 
 <div class="flex flex-col items-center justify-center h-screen gap-6 text-center">
@@ -270,6 +306,7 @@ else if (Date.now() - lastHeard > HOLD_MS) {
 	<button on:click={generateRandomLine} class="my-4 rounded-md bg-blue-500 px-4 py-2 text-white">
 		New Staff
 	</button>
+	<button class="my-2 rounded-md bg-gray-500 px-4 py-2 text-white" on:click={testButtonClicked}>test</button>
 
 	<div class="flex flex-col items-center gap-1">
 		<div class="text-6xl font-mono">{freq || '--'} Hz</div>

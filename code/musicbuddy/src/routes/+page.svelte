@@ -1,11 +1,20 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
+  import { YIN } from 'pitchfinder';
+
 
 	/* --- constants & helpers --- */
 	const NOTES = ['C','C♯','D','D♯','E','F','F♯','G','G♯','A','A♯','B'];
-	const BUF_SIZE = 1024, HIST = 5, HOLD_MS = 3000;
-	const MIN_FREQ = 80;
+	const HIST = 5 
+  const HOLD_MS = 3000;
+  const BUF_SIZE = 4096;              // 1024 → 4096  (≈ 93 ms @ 44.1 kHz)
+  
+	const MIN_FREQ = 40;
 	const MAX_FREQ = 1200;
+  const THRESH        = 0.07;     // stricter than default 0.10
+const PROB_MIN      = 0.90;     // only accept highly confident frames
+const OCT_TOL       = 0.03;     // ±3 % tolerance for 2× test
+let   lastFreq      = 0;
 	const f2n = (f:number)=>`${NOTES[Math.round(12*Math.log2(f/440)+69)%12]}${Math.floor((Math.round(12*Math.log2(f/440)+69))/12)-1}`;
 	const rms2db = (r:number)=>20*Math.log10(r||1e-10);
 
@@ -31,54 +40,33 @@ function isSubHarmonic(cand: number, ref: number): boolean {
     Math.abs(cand * 4 - ref) / ref < TOL      // ¼ ×
   );
 }
-
-
-	function detect(buf: Float32Array, sr: number): number {
-  /* 1. loudness gate ---------------------------------------------------- */
-  let energy = 0;
-  for (let i = 0; i < buf.length; i++) energy += buf[i] * buf[i];
-  const rms = Math.sqrt(energy / buf.length);
-  loudness = rms2db(rms);
-  if (loudness < minDb) return -1;
-
-  /* 2. search lag window for 80-1200 Hz -------------------------------- */
-  const minLag = Math.floor(sr / MAX_FREQ);  // shortest lag (≈ 37)
-  const maxLag = Math.floor(sr / MIN_FREQ);  // longest  lag (≈ 551)
-  const halfBuf = buf.length >> 1;
-  const searchLimit = Math.min(maxLag, halfBuf);
-
-  let bestCorr = 0;
-  let bestLag  = -1;
-
-  for (let lag = minLag; lag <= searchLimit; lag++) {
-    let corr = 0;
-    for (let i = 0; i < halfBuf; i++) corr += buf[i] * buf[i + lag];
-    if (corr > bestCorr) { bestCorr = corr; bestLag = lag; }
-  }
-
-  /* 3. confidence guard ------------------------------------------------- */
-  const CONF_THRESH = 0.35;          // relaxed threshold
-  const selfCorr = energy;           // correlation at lag 0
-  if (bestLag < 0 || bestCorr / selfCorr < CONF_THRESH) return -1;
-
-  /* 4. convert lag → frequency & hard-cap filter ------------------------ */
-  const candidate = sr / bestLag;
-  if (candidate >= MAX_FREQ) return -1;  // discard 1200 Hz glitches
-
-  return candidate;                      // valid pitch
+function correlationAt(buf: Float32Array, lag: number): number {
+    let sum = 0;
+    const n = buf.length - lag;      // keep indices in-range
+    for (let i = 0; i < n; i++) sum += buf[i] * buf[i + lag];
+    return sum;
 }
 
 
 
-	let raf: number | null = null;   // note the null so "no frame yet" ≠ 0
 
+	let raf: number | null = null;   // note the null so "no frame yet" ≠ 0
+  let yinDetect: (data: Float32Array) => number | null;
 	onMount(async () => {
 		if (typeof window === 'undefined') return;   // SSR guard
 		try {
 			const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 			ctx = new AudioContext();
-			analyser = ctx.createAnalyser();
-			analyser.fftSize = BUF_SIZE * 2;
+      analyser = ctx.createAnalyser();
+	analyser.fftSize = BUF_SIZE;
+
+      
+      yinDetect = YIN({
+  sampleRate: ctx.sampleRate,
+  threshold: THRESH,
+  probabilityThreshold: PROB_MIN,
+});
+			
 			ctx.createMediaStreamSource(stream).connect(analyser);
 
 			running = true;
@@ -88,6 +76,29 @@ function isSubHarmonic(cand: number, ref: number): boolean {
 		}
 		generateRandomLine();
 	});
+  const EPS        = 1e-8;         // protects log10(0)
+const MIN_RMS    = 0.010;        // tweak ~1–2 % full-scale
+function detect(buf: Float32Array): number {
+  // 1. Calculate RMS and loudness (dBFS)
+  let sum = 0;
+  for (let i = 0; i < buf.length; i++) {
+    sum += buf[i] * buf[i];
+  }
+  const rms = Math.sqrt(sum / buf.length);
+  loudness = rms2db(rms); // update loudness to reflect mic input
+
+  const f = yinDetect(buf);           // null | Hz
+  if (f == null || f < MIN_FREQ || f > MAX_FREQ) return -1;
+
+  // 2. fold “double-frequency” glitches
+  if (lastFreq && Math.abs(f - 2*lastFreq)/f < OCT_TOL) {
+    lastFreq = f / 2;
+  } else {
+    lastFreq = f;
+  }
+  return lastFreq;
+}
+
 
 	onDestroy(() => {
 		// cancelAnimationFrame only exists in the browser; guard first
@@ -96,7 +107,7 @@ function isSubHarmonic(cand: number, ref: number): boolean {
 		}
 		ctx?.close();
 	});
-	const GREEN = '#16a34a';          // Tailwind “green-600”; tweak if desired
+	const GREEN = '#16a34a';          // Tailwind "green-600"; tweak if desired
 
 function markNoteGreen(note: StaveNote): void {
   note.setStyle({
@@ -138,15 +149,15 @@ function isClearlyDifferent(a: number, b: number): boolean {
 
 let matchedFreq = 0;             // freq of the last note we turned green
 let gate: 'READY' | 'WAIT_NEXT' | 'WAIT_ATTACK' = 'READY';
-let readyToMatch = true;     // true  ⇒ we’re allowed to judge this note
-let waitingForSilence = false; // aids “dip-then-rise” detection
+let readyToMatch = true;     // true  ⇒ we're allowed to judge this note
+let waitingForSilence = false; // aids "dip-then-rise" detection
 let i = 0;
 function tick(): void {
   if (!running) return;
 
   /* -------- 1. Pull audio & estimate pitch -------- */
   analyser.getFloatTimeDomainData(buf);
-  const p = detect(buf, ctx.sampleRate);
+  const p = detect(buf);
 
   if (p > 0) {
   hist.push(p);
@@ -216,7 +227,7 @@ else if (Date.now() - lastHeard > HOLD_MS) {
 	const NOTE_LETTERS = ['c', 'd', 'e', 'f', 'g', 'a', 'b']; //    lower-case
 	const OCTAVES      = [3,4];   // sensible alto-clef range (G3–F5)
 
-	function randomNote() {                  //   returns “d/4”
+	function randomNote() {                  //   returns "d/4"
    const letter = NOTE_LETTERS[Math.floor(Math.random() * NOTE_LETTERS.length)];
    const octave = OCTAVES[Math.floor(Math.random() * OCTAVES.length)];
    line.push(`${letter.toUpperCase()}${octave}`);
@@ -244,9 +255,9 @@ else if (Date.now() - lastHeard > HOLD_MS) {
 		/* 8 quarter-notes */
 		notes = Array.from({ length: 8 }, () =>
    new StaveNote({
-    keys: [randomNote()],                 //    “d/4”  ✔
+    keys: [randomNote()],                 //    "d/4"  ✔
      duration: 'q',
-     clef: 'alto'                         // tell VexFlow we’re on alto
+     clef: 'alto'                         // tell VexFlow we're on alto
    })
  );
 
@@ -261,6 +272,56 @@ else if (Date.now() - lastHeard > HOLD_MS) {
 
 
 	}		
+
+
+function testButtonClicked() {
+  if (!vfDiv) return;
+  vfDiv.innerHTML = '';
+  const renderer = new Renderer(vfDiv, Renderer.Backends.SVG);
+  renderer.resize(600, 140);
+  const context = renderer.getContext();
+  const stave = new Stave(10, 20, 580);
+  stave.addClef('alto').addTimeSignature('8/4');
+  stave.setContext(context).draw();
+}
+
+function renderG3Staff() {
+  line = ['G4', 'G5'];
+  notes = [new StaveNote({
+    keys: ['g/4'],
+    duration: 'q',
+    clef: 'alto'
+  }), new StaveNote({
+    keys: ['g/5'],
+    duration: 'q',
+    clef: 'alto'
+  })];
+  i = 0;
+   
+  console.log(line);
+  if (!vfDiv) return;
+  vfDiv.innerHTML = '';
+  const renderer = new Renderer(vfDiv, Renderer.Backends.SVG);
+  renderer.resize(600, 140);
+  const context = renderer.getContext();
+  const stave = new Stave(10, 20, 580);
+  stave.addClef('alto').addTimeSignature('2/4');
+  stave.setContext(context).draw();
+  const g3Note = new StaveNote({
+    keys: ['g/4'],
+    duration: 'q',
+    clef: 'alto'
+  });
+  const g2Note = new StaveNote({
+    keys: ['g/5'],
+    duration: 'q',
+    clef: 'alto'
+  });
+  const voice = new Voice({ numBeats: 2, beatValue: 4 });
+  voice.addTickables([g3Note, g2Note]);
+  new Formatter().joinVoices([voice]).format([voice], 520);
+  voice.draw(context, stave);
+}
 </script>
 
 <div class="flex flex-col items-center justify-center h-screen gap-6 text-center">

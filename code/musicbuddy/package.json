@@ -37,6 +37,7 @@
 		"vite-plugin-devtools-json": "^0.2.0"
 	},
 	"dependencies": {
+		"pitchfinder": "^2.3.2",
 		"vexflow": "^5.0.0"
 	}
 }
