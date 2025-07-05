@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { YIN } from 'pitchfinder';
-  import { Renderer, Stave, StaveNote, Voice, Formatter } from 'vexflow';
+  import { Renderer, Stave, StaveNote, Voice, Formatter, Accidental, KeyManager } from 'vexflow';
 
   /* --- constants & helpers --- */
   const NOTES = ['C','C♯','D','D♯','E','F','F♯','G','G♯','A','A♯','B'];
@@ -19,6 +19,54 @@
   const HIST = 5;
   const HOLD_MS = 3000;
   const BUF_SIZE = 4096;              // ≈ 93 ms @ 44.1 kHz
+
+  let km: KeyManager;
+
+  const KEY_SIGS = [
+    { value: 'random', label: 'Random' },   // leave the generator unchanged
+    { value: 'C',      label: 'C major / A minor (0 ♯/♭)' },
+    { value: 'G',      label: 'G major / E minor (1 ♯)'  },
+    { value: 'D',      label: 'D major / B minor (2 ♯)'  },
+    { value: 'A',      label: 'A major / F♯ minor (3 ♯)' },
+    { value: 'E',      label: 'E major / C♯ minor (4 ♯)' },
+    { value: 'B',      label: 'B major / G♯ minor (5 ♯)' },
+    { value: 'F#',     label: 'F♯ major / D♯ minor (6 ♯)' },
+    { value: 'C#',     label: 'C♯ major / A♯ minor (7 ♯)' },
+    { value: 'F',      label: 'F major / D minor (1 ♭)'  },
+    { value: 'Bb',     label: 'B♭ major / G minor (2 ♭)' },
+    { value: 'Eb',     label: 'E♭ major / C minor (3 ♭)' },
+    { value: 'Ab',     label: 'A♭ major / F minor (4 ♭)' },
+    { value: 'Db',     label: 'D♭ major / B♭ minor (5 ♭)' },
+    { value: 'Gb',     label: 'G♭ major / E♭ minor (6 ♭)' },
+    { value: 'Cb',     label: 'C♭ major / A♭ minor (7 ♭)' }
+  ];
+
+  let selectedKeySig  = 'random';   // what the user picked in the UI
+  let currentKeySig   = 'C';        // the actual key used on the staff
+
+/* helper — turn “random” into a real key */
+function resolveKey(): string {
+  return selectedKeySig === 'random'
+    ? KEY_SIGS[Math.floor(Math.random() * (KEY_SIGS.length - 1)) + 1].value
+    : selectedKeySig;
+}
+
+function accidentalCount(key: string): number {
+  // strip any “m” (relative-minor) suffix
+  const root = key.replace(/m$/i, '');
+
+  const SHARPS = ['C', 'G', 'D', 'A', 'E', 'B', 'F#', 'C#'];
+  const FLATS  = ['C', 'F', 'Bb', 'Eb', 'Ab', 'Db', 'Gb', 'Cb'];
+
+  const sharpIndex = SHARPS.indexOf(root);
+  if (sharpIndex !== -1) return sharpIndex;          // 0-7 sharps
+
+  const flatIndex  = FLATS.indexOf(root);
+  if (flatIndex  !== -1) return flatIndex;           // 0-7 flats
+
+  return 0;                                          // fallback (shouldn’t happen)
+}
+
   
   const MIN_FREQ = 40;
   const MAX_FREQ = 1200;
@@ -34,7 +82,8 @@
   let freq = 0, note = '--';
   let loudness = -Infinity, minDb = -35;
   let lastHeard = 0;                     // ms timestamp of last valid pitch
-  let line: string[] = [];
+  let line: string[] = [];      // pretty for display (“D♭4”)
+  let target: number[] = [];    // canonical MIDI numbers (61)
 
   /* --- audio setup --- */
   let ctx:AudioContext, analyser:AnalyserNode;
@@ -105,64 +154,145 @@
   const GREEN = '#16a34a';
   const markNoteGreen = (n: StaveNote) => n.setStyle({ fillStyle: GREEN, strokeStyle: GREEN });
 
-  function renderStaff(): void {
-    if (!vfDiv) return;
-    vfDiv.innerHTML = '';
 
-    const renderer = new Renderer(vfDiv, Renderer.Backends.SVG);
-    renderer.resize(600, 140);
-    const ctxR = renderer.getContext();
+  function clearStaffContainer() {
+  if (!vfDiv) return;
+  // This removes **everything**, even if the previous renderer
+  // sneaked extra nodes next to the <svg>.
+  while (vfDiv.firstChild) vfDiv.removeChild(vfDiv.firstChild);
+}
 
-    const stave = new Stave(10, 20, 580)
-      .addClef(selectedClef)
-      .addTimeSignature('8/4');
-    stave.setContext(ctxR).draw();
+function calcStaveWidth(noteCount: number, accCount: number): number {
+  const BASE   = 120;   // clef + time sig
+  const PER_Q  = 70;    // each quarter note
+  const PER_ACC = 18;   // each accidental glyph needs ~18 px
 
-    const voice = new Voice({ resolution: 4096 } as any);
-    voice.setMode(Voice.Mode.SOFT);
-    voice.addTickables(notes);
+  return BASE + PER_Q * noteCount + PER_ACC * accCount;
+}
 
-    new Formatter().joinVoices([voice]).format([voice], 520);
-    voice.draw(ctxR, stave);
-  }
+function renderStaff(): void {
+  if (!vfDiv) return;
+
+  const accCnt = accidentalCount(currentKeySig);
+  const width  = calcStaveWidth(notes.length, accCnt);
+
+  vfDiv.innerHTML = '';
+  const renderer = new Renderer(vfDiv, Renderer.Backends.SVG);
+  renderer.resize(width + 40, 140);
+  const ctx = renderer.getContext();
+
+  const stave = new Stave(10, 20, width)
+    .addClef(selectedClef)
+    .addTimeSignature('8/4')
+    .addKeySignature(currentKeySig);
+  stave.setContext(ctx).draw();
+
+  const voice = new Voice({ numBeats: 8, beatValue: 4 }).addTickables(notes);
+  Accidental.applyAccidentals([voice], currentKeySig);
+
+  new Formatter().joinVoices([voice]).format([voice], width - 60);
+  voice.draw(ctx, stave);
+}
+
+
 
   const NOTE_LETTERS = ['c', 'd', 'e', 'f', 'g', 'a', 'b'];
   function randomNote(): string {
-    const OCTAVES = CLEF_RANGES[selectedClef];
-    const letter = NOTE_LETTERS[Math.floor(Math.random()*NOTE_LETTERS.length)];
-    const octave = OCTAVES[Math.floor(Math.random()*OCTAVES.length)];
-    line.push(`${letter.toUpperCase()}${octave}`);
-    return `${letter}/${octave}`;
-  }
+  const OCTAVES = CLEF_RANGES[selectedClef];
 
-  function generateRandomLine() {
-    line = [];
-    i = 0;
-    if (!vfDiv) return;
+  /* 1. choose diatonic vs chromatic */
+  const pick  = Math.random();
+  const root  = pick < 0.65
+    ? NOTE_LETTERS[Math.floor(Math.random() * NOTE_LETTERS.length)]
+    : (() => {
+        const letter = NOTE_LETTERS[Math.floor(Math.random() * NOTE_LETTERS.length)];
+        const acc    = Math.random() < 0.5 ? '#' : 'b';
+        return `${letter}${acc}`;
+      })();
 
-    vfDiv.innerHTML = '';
-    const renderer = new Renderer(vfDiv, Renderer.Backends.SVG);
-    renderer.resize(600, 140);
-    const context = renderer.getContext();
+  const octave  = OCTAVES[Math.floor(Math.random() * OCTAVES.length)];
 
-    const stave = new Stave(10, 20, 580);
-    stave.addClef(selectedClef).addTimeSignature('8/4');
-    stave.setContext(context).draw();
+  /* 2. spell for the key */
+  const sel     = km.selectNote(root);          // { note:'d#', accidental:'#', change:true }
+  const keyStr  = `${sel.note}/${octave}`;      // "d#/4"
 
-    notes = Array.from({ length: 8 }, () =>
-      new StaveNote({
-        keys: [randomNote()],
-        duration: 'q',
-        clef: selectedClef
-      })
-    );
+  /* pretty text used for comparison */
+  const pretty  = sel.accidental
+      ? `${sel.note[0].toUpperCase()}${sel.accidental === '#' ? '♯' : '♭'}${octave}`
+      : `${sel.note.toUpperCase()}${octave}`;
 
-    const voice = new Voice({ numBeats: 8, beatValue: 4 });
-    voice.addTickables(notes);
+  line.push(pretty);
+  target.push(canon(pretty));
 
-    new Formatter().joinVoices([voice]).format([voice], 520);
-    voice.draw(context, stave);
-  }
+  return keyStr;                                // defer StaveNote construction
+}
+
+
+
+function generateRandomLine() {
+  line = [];
+  target = [];
+  i = 0;
+
+  currentKeySig = resolveKey();
+  km = new KeyManager(currentKeySig);
+
+  /* ----- create 8 StaveNotes ---------------------------------------- */
+  notes = Array.from({ length: 8 }, () => {
+    const key   = randomNote();                 // pushes into line[] / target[]
+    const note  = new StaveNote({ keys:[key], duration:'q', clef:selectedClef });
+
+    // attach accidental only if KeyManager says it's new
+    const sel = km.getAccidental(key.split('/')[0]);   // helper to peek current accidental
+    if (sel?.change && sel.accidental) {
+      note.addModifier(new Accidental(sel.accidental), 0);   // correct arg order
+    }
+    return note;
+  });
+
+  const accCnt = accidentalCount(currentKeySig);
+  const width  = calcStaveWidth(notes.length, accCnt);
+
+  vfDiv.innerHTML = '';
+  const renderer = new Renderer(vfDiv, Renderer.Backends.SVG);
+  renderer.resize(width + 40, 140);   // 20-px side margins
+  const ctx = renderer.getContext();
+
+  const stave = new Stave(10, 20, width)
+    .addClef(selectedClef)
+    .addTimeSignature('8/4')
+    .addKeySignature(currentKeySig);
+  stave.setContext(ctx).draw();
+
+  const voice = new Voice({ numBeats: 8, beatValue: 4 }).addTickables(notes);
+  Accidental.applyAccidentals([voice], currentKeySig);
+
+  new Formatter().joinVoices([voice]).format([voice], width - 60);
+  voice.draw(ctx, stave);
+}
+
+
+
+
+function canon(s: string): number {
+  const m = s.match(/^([A-Ga-g])([#♯b♭]?)(\d)$/);
+  if (!m) throw new Error(`Bad note: ${s}`);
+
+  const letter = m[1].toUpperCase();
+  const acc    = m[2];
+  const oct    = +m[3];
+
+  const BASE: Record<string, number> = { C:0, D:2, E:4, F:5, G:7, A:9, B:11 };
+  let semitone = BASE[letter];
+
+  if (acc === '#' || acc === '♯') semitone += 1;
+  else if (acc === 'b' || acc === '♭') semitone -= 1;
+
+  return (oct + 1) * 12 + semitone;   // standard MIDI numbering
+}
+function isRealNote(n: string): boolean {
+  return /^[A-G][#♯b♭]?\d$/.test(n);
+}
 
   function isClearlyDifferent(a: number, b: number) { return Math.abs(a - b) / b > 0.10; }
 
@@ -192,13 +322,19 @@
 
     switch (gate) {
       case 'READY':
-        if (note === line[i]) {
+        //console.log(note, line[i]);
+        //console.log(isRealNote(note), canon(note), target[i])
+        if (isRealNote(note) && canon(note) === target[i]) {
           markNoteGreen(notes[i]);
           matchedFreq = freq;
           i++;
           renderStaff();
+          if (i === notes.length){
+            generateRandomLine();
+          }
           gate = 'WAIT_NEXT';
         }
+
         break;
       case 'WAIT_NEXT':
         if (loudness < minDb) gate = 'WAIT_ATTACK';
@@ -224,6 +360,19 @@
     <select bind:value={selectedClef} on:change={generateRandomLine} class="rounded border px-2 py-1">
       {#each CLEFS as c}
         <option value={c}>{c.charAt(0).toUpperCase() + c.slice(1)}</option>
+      {/each}
+    </select>
+  </label>
+
+  <label class="flex items-center gap-2">
+    <span class="text-sm">Key&nbsp;Sig:</span>
+    <select
+      bind:value={selectedKeySig}
+      on:change={generateRandomLine}
+      class="rounded border px-2 py-1"
+    >
+      {#each KEY_SIGS as ks}
+        <option value={ks.value}>{ks.label}</option>
       {/each}
     </select>
   </label>
