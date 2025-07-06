@@ -2,12 +2,12 @@
   import { onMount, onDestroy } from 'svelte';
   import { YIN } from 'pitchfinder';
   import { Renderer, Stave, StaveNote, Voice, Formatter, Accidental, KeyManager } from 'vexflow';
-
+  import { parseAugmentedNet, type MeasureData } from './analysisToStave';
   /* --- constants & helpers --- */
   const NOTES = ['C','C♯','D','D♯','E','F','F♯','G','G♯','A','A♯','B'];
   const CLEFS = ['bass','alto','treble'] as const;
   type Clef = typeof CLEFS[number];
-  let selectedClef: Clef = 'alto';
+  let selectedClef: Clef = 'treble';
 
   // Octave ranges roughly centred on each clef
   const CLEF_RANGES: Record<Clef, number[]> = {
@@ -170,7 +170,7 @@ function calcStaveWidth(noteCount: number, accCount: number): number {
   return BASE + PER_Q * noteCount + PER_ACC * accCount;
 }
 
-function renderStaff(): void {
+function renderStaff(beats: number): void {
   if (!vfDiv) return;
 
   const accCnt = accidentalCount(currentKeySig);
@@ -187,7 +187,7 @@ function renderStaff(): void {
     .addKeySignature(currentKeySig);
   stave.setContext(ctx).draw();
 
-  const voice = new Voice({ numBeats: 8, beatValue: 4 }).addTickables(notes);
+  const voice = new Voice({ numBeats: beats, beatValue: 4 }).addTickables(notes);
   Accidental.applyAccidentals([voice], currentKeySig);
 
   new Formatter().joinVoices([voice]).format([voice], width - 60);
@@ -223,7 +223,6 @@ function renderStaff(): void {
 
   line.push(pretty);
   target.push(canon(pretty));
-
   return keyStr;                                // defer StaveNote construction
 }
 
@@ -264,6 +263,8 @@ function generateRandomLine() {
     .addKeySignature(currentKeySig);
   stave.setContext(ctx).draw();
 
+
+  
   const voice = new Voice({ numBeats: 8, beatValue: 4 }).addTickables(notes);
   Accidental.applyAccidentals([voice], currentKeySig);
 
@@ -322,13 +323,12 @@ function isRealNote(n: string): boolean {
 
     switch (gate) {
       case 'READY':
-        //console.log(note, line[i]);
-        //console.log(isRealNote(note), canon(note), target[i])
+  
         if (isRealNote(note) && canon(note) === target[i]) {
           markNoteGreen(notes[i]);
           matchedFreq = freq;
           i++;
-          renderStaff();
+          renderStaff(notes.length);
           if (i === notes.length){
             generateRandomLine();
           }
@@ -346,6 +346,66 @@ function isRealNote(n: string): boolean {
     }
     raf = requestAnimationFrame(tick);
   }
+
+  /* ─── helper: draw each measure on its own staff ────────────────────────── */
+
+
+
+  let analysisTxt = `
+Composer: Traditional
+Title: Hot Cross Buns – melody line
+Analyst: ChatGPT demo
+
+Time Signature: 4/4
+
+m1 C: C4
+`
+
+  /* 3 ─── render the first staff described in the parsed data */
+  function renderAnalysisLine() {
+  const measures = parseAugmentedNet(analysisTxt.trim());
+  if (!measures.length) return alert('Nothing parsed');
+
+  // grab every chord from the FIRST measure
+  notes         = measures[0].notes;          // could be 1, 2, … chords
+  currentKeySig = measures[0].key.split(' ')[0];
+  km            = new KeyManager(currentKeySig);
+  line = []
+  target = []
+  console.log(notes)
+  console.log(notes[0].keys[0])
+  for (let x = 0; x < notes.length; x++) {
+    line.push(notes[x].keys[0].replace('/', ''))
+    target.push(canon(notes[x].keys[0].replace('/', '')))
+  }
+  i = 0
+  console.log(line)
+  // ─── ADAPT THE VOICE & STAVE TO NOTE COUNT ───
+  const beats   = notes.length;               // 1 chord → 1 beat
+  const voice   = new Voice({ numBeats: beats, beatValue: 4 })
+                    .addTickables(notes);
+
+  // rebuild stave with matching time-signature
+  const accCnt  = accidentalCount(currentKeySig);
+  const width   = calcStaveWidth(notes.length, accCnt);
+
+  vfDiv.innerHTML = '';
+  const renderer  = new Renderer(vfDiv, Renderer.Backends.SVG);
+  renderer.resize(width + 40, 140);
+  const ctx       = renderer.getContext();
+
+  const stave = new Stave(10, 20, width)
+                 .addClef(selectedClef)
+                 .addTimeSignature(`${beats}/4`)   // ← dynamic
+                 .addKeySignature(currentKeySig);
+
+  stave.setContext(ctx).draw();
+  Accidental.applyAccidentals([voice], currentKeySig);
+
+  new Formatter().joinVoices([voice]).format([voice], width - 60);
+  voice.draw(ctx, stave);
+}
+
 
   /* ----------  DOM refs ---------- */
   let vfDiv: HTMLDivElement;
@@ -394,4 +454,13 @@ function isRealNote(n: string): boolean {
 
   <div class="text-xs opacity-70">current loudness: {loudness.toFixed(1)} dBFS</div>
   <footer class="text-xs opacity-60">buncha updates soon for variety soon</footer>
+  <!-- textarea + new button -->
+<textarea bind:value={analysisTxt}
+rows="6"
+class="w-full max-w-xl rounded border p-2 text-xs"></textarea>
+
+<button on:click={renderAnalysisLine}
+class="rounded-md bg-purple-600 px-4 py-2 text-white">
+Render AugmentedNet Staff
+</button>
 </div>
