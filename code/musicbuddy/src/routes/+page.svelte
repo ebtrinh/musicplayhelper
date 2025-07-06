@@ -8,6 +8,8 @@
   const CLEFS = ['bass','alto','treble'] as const;
   type Clef = typeof CLEFS[number];
   let selectedClef: Clef = 'treble';
+  let msreCount = -1;
+  let totalMsre = 0;
 
   // Octave ranges roughly centred on each clef
   const CLEF_RANGES: Record<Clef, number[]> = {
@@ -229,6 +231,7 @@ function renderStaff(beats: number): void {
 
 
 function generateRandomLine() {
+  msreCount = -1
   line = [];
   target = [];
   i = 0;
@@ -330,7 +333,18 @@ function isRealNote(n: string): boolean {
           i++;
           renderStaff(notes.length);
           if (i === notes.length){
-            generateRandomLine();
+            if (msreCount == -1){
+              generateRandomLine();
+            }
+            else {
+              if (msreCount == totalMsre-1){
+                console.log("done")
+              }
+              else{
+                msreCount++
+                renderAnalysisLine()
+              }
+            }
           }
           gate = 'WAIT_NEXT';
         }
@@ -352,23 +366,31 @@ function isRealNote(n: string): boolean {
 
 
   let analysisTxt = `
+
 Composer: Traditional
 Title: Hot Cross Buns – melody line
 Analyst: ChatGPT demo
 
 Time Signature: 4/4
 
-m1 C: C4
+m1 C: C4 D4 E4
+m2 C: E4 D4 C4
+
 `
 
   /* 3 ─── render the first staff described in the parsed data */
   function renderAnalysisLine() {
   const measures = parseAugmentedNet(analysisTxt.trim());
   if (!measures.length) return alert('Nothing parsed');
-
+  
   // grab every chord from the FIRST measure
-  notes         = measures[0].notes;          // could be 1, 2, … chords
-  currentKeySig = measures[0].key.split(' ')[0];
+  if (msreCount == -1){
+    msreCount = 0;
+  }
+  
+  totalMsre = measures.length;
+  notes         = measures[msreCount].notes;          // could be 1, 2, … chords
+  currentKeySig = measures[msreCount].key.split(' ')[0];
   km            = new KeyManager(currentKeySig);
   line = []
   target = []
