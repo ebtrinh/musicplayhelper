@@ -2,7 +2,8 @@
   import { onMount, onDestroy } from 'svelte';
   import { YIN } from 'pitchfinder';
   import { Renderer, Stave, StaveNote, Voice, Formatter, Accidental, KeyManager } from 'vexflow';
-  import { parseAugmentedNet, type MeasureData } from './analysisToStave';
+  import { parseMusicXML, type MeasureData } from './analysisToStave';
+	import { render } from 'svelte/server';
   /* --- constants & helpers --- */
   const NOTES = ['C','C♯','D','D♯','E','F','F♯','G','G♯','A','A♯','B'];
   const CLEFS = ['bass','alto','treble'] as const;
@@ -10,7 +11,6 @@
   let selectedClef: Clef = 'treble';
   let msreCount = -1;
   let totalMsre = 0;
-
   // Octave ranges roughly centred on each clef
   const CLEF_RANGES: Record<Clef, number[]> = {
     bass:   [2,3],   // C2–B3
@@ -364,7 +364,7 @@ function isRealNote(n: string): boolean {
   /* ─── helper: draw each measure on its own staff ────────────────────────── */
 
 
-
+  let userInput = ''
   let analysisTxt = `
 
 Composer: Traditional
@@ -377,16 +377,39 @@ m1 C: C4 D4 E4
 m2 C: E4 D4 C4
 
 `
+  let xmlText:string = ""
+  let measures: any
+  function getMusicXML() {   
+    console.log(selectedClef)
+    measures = parseMusicXML(xmlText, selectedClef);
+    console.log(measures)
+  }
+
+  async function setSong(song:string, preset:boolean){
+    if (preset){
+      const filed = '/scores/' + song + '.musicxml'
+      analysisTxt = filed
+      xmlText  = await fetch(analysisTxt).then(r => r.text());
+    }
+    else {
+      xmlText = userInput
+    }
+    
+    msreCount = -1
+    renderAnalysisLine()
+  }
+
 
   /* 3 ─── render the first staff described in the parsed data */
-  function renderAnalysisLine() {
-  const measures = parseAugmentedNet(analysisTxt.trim());
-  if (!measures.length) return alert('Nothing parsed');
+  async function renderAnalysisLine() {
+  if (msreCount == -1 || measures == undefined){
+    msreCount = 0;
+    await getMusicXML()
+  }
+    if (!measures.length) return alert('Nothing parsed');
   
   // grab every chord from the FIRST measure
-  if (msreCount == -1){
-    msreCount = 0;
-  }
+  
   
   totalMsre = measures.length;
   notes         = measures[msreCount].notes;          // could be 1, 2, … chords
@@ -428,6 +451,17 @@ m2 C: E4 D4 C4
   voice.draw(ctx, stave);
 }
 
+async function clefchanged(){
+  if (msreCount == -1){
+    console.log("renderedstaff")
+    generateRandomLine()
+  }
+  else {
+    console.log("changeanalysisline")
+    await getMusicXML()
+    renderAnalysisLine()
+  }
+}
 
   /* ----------  DOM refs ---------- */
   let vfDiv: HTMLDivElement;
@@ -439,7 +473,7 @@ m2 C: E4 D4 C4
   <!-- Clef picker -->
   <label class="flex items-center gap-2">
     <span class="text-sm">Clef:</span>
-    <select bind:value={selectedClef} on:change={generateRandomLine} class="rounded border px-2 py-1">
+    <select bind:value={selectedClef} on:change={clefchanged} class="rounded border px-2 py-1">
       {#each CLEFS as c}
         <option value={c}>{c.charAt(0).toUpperCase() + c.slice(1)}</option>
       {/each}
@@ -477,12 +511,44 @@ m2 C: E4 D4 C4
   <div class="text-xs opacity-70">current loudness: {loudness.toFixed(1)} dBFS</div>
   <footer class="text-xs opacity-60">buncha updates soon for variety soon</footer>
   <!-- textarea + new button -->
-<textarea bind:value={analysisTxt}
-rows="6"
-class="w-full max-w-xl rounded border p-2 text-xs"></textarea>
 
-<button on:click={renderAnalysisLine}
-class="rounded-md bg-purple-600 px-4 py-2 text-white">
-Render AugmentedNet Staff
-</button>
+
+
+<div class="w-full mt-8 border-t bg-gray-50 p-4 flex gap-4">
+
+  <!-- ◀ Left side: free-form input -->
+  <div class="flex-1 flex flex-col">
+    <textarea
+      bind:value={userInput}
+      rows="4"
+      class="flex-1 w-full rounded border p-2 text-xs resize-none"
+      placeholder="Paste AugmentedNet or MusicXML here…">
+    </textarea>
+    <button
+      on:click={() => setSong("", false)}
+      class="mt-2 self-end rounded bg-blue-600 px-4 py-1 text-white">
+      Render Input
+    </button>
+  </div>
+
+  <!-- ▶ Right side: presets (no handlers yet) -->
+  <div class="flex-1 flex flex-col justify-start gap-2">
+    <button 
+      on:click={() => setSong('hot-cross-buns', true)}
+      class="w-full rounded bg-purple-500 px-4 py-2 text-white">
+      Hot Cross Buns
+    </button>
+    <button 
+      on:click={() => setSong('twinkle-twinkle-little-star', true)}
+      class="w-full rounded bg-purple-500 px-4 py-2 text-white">
+      Twinkle Twinkle
+    </button>
+    <button 
+      on:click={() => setSong('mary-had-a-little-lamb', true)}
+      class="w-full rounded bg-purple-500 px-4 py-2 text-white">
+      Mary Had a Little Lamb
+    </button>
+  </div>
+
+</div>
 </div>
