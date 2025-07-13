@@ -20,7 +20,7 @@
       </attributes>
 
       <note>
-        <pitch><step>C</step><octave>4</octave></pitch>
+        <pitch><step>E</step><octave>4</octave></pitch>
         <duration>1</duration><type>quarter</type>
       </note>
       <note>
@@ -28,7 +28,7 @@
         <duration>1</duration><type>quarter</type>
       </note>
       <note>
-        <pitch><step>E</step><octave>4</octave></pitch>
+        <pitch><step>C</step><octave>4</octave></pitch>
         <duration>1</duration><type>quarter</type>
       </note>
       <!-- Quarter rest to fill 4/4 -->
@@ -39,6 +39,59 @@
 
     <!-- Measure 2: E-D-C quarter notes -->
     <measure number="2">
+      <note>
+        <pitch><step>E</step><octave>4</octave></pitch>
+        <duration>1</duration><type>quarter</type>
+      </note>
+      <note>
+        <pitch><step>D</step><octave>4</octave></pitch>
+        <duration>1</duration><type>quarter</type>
+      </note>
+      <note>
+        <pitch><step>C</step><octave>4</octave></pitch>
+        <duration>1</duration><type>quarter</type>
+      </note>
+      <note>
+        <rest/><duration>1</duration><type>quarter</type>
+      </note>
+    </measure>
+    <measure number="3">
+      <note>
+        <pitch><step>C</step><octave>4</octave></pitch>
+        <duration>1</duration><type>quarter</type>
+      </note>
+      <note>
+        <pitch><step>C</step><octave>4</octave></pitch>
+        <duration>1</duration><type>quarter</type>
+      </note>
+      <note>
+        <pitch><step>C</step><octave>4</octave></pitch>
+        <duration>1</duration><type>quarter</type>
+      </note>
+      <note>
+        <pitch><step>C</step><octave>4</octave></pitch>
+        <duration>1</duration><type>quarter</type>
+      </note>
+    </measure>
+    <measure number="4">
+      <note>
+        <pitch><step>D</step><octave>4</octave></pitch>
+        <duration>1</duration><type>quarter</type>
+      </note>
+      <note>
+        <pitch><step>D</step><octave>4</octave></pitch>
+        <duration>1</duration><type>quarter</type>
+      </note>
+      <note>
+        <pitch><step>D</step><octave>4</octave></pitch>
+        <duration>1</duration><type>quarter</type>
+      </note>
+      <note>
+        <pitch><step>D</step><octave>4</octave></pitch>
+        <duration>1</duration><type>quarter</type>
+      </note>
+    </measure>
+    <measure number="5">
       <note>
         <pitch><step>E</step><octave>4</octave></pitch>
         <duration>1</duration><type>quarter</type>

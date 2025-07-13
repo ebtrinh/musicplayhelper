@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { YIN } from 'pitchfinder';
-  import { Renderer, Stave, StaveNote, Voice, Formatter, Accidental, KeyManager } from 'vexflow';
+  import { Renderer, RenderContext, Stave, StaveNote, Voice, Formatter, Accidental, KeyManager, Beam } from 'vexflow';
   import { parseMusicXML, type MeasureData } from './analysisToStave';
 	import { render } from 'svelte/server';
   /* --- constants & helpers --- */
@@ -18,9 +18,35 @@
     treble: [4,5]    // E4–C6
   };
 
+  const DURATIONS = [
+  { dur: 'h', beats: 2,   w: 1 },   // halves  →  ~20 %
+  { dur: 'q', beats: 1,   w: 3 },   // quarters →  ~60 %
+  { dur: '8', beats: 0.5, w: 1 }    // eighths  →  ~20 %
+] as const;
+
+/* weighted-random helper */
+function pickWeighted<T extends { w: number }>(arr: T[]): T {
+  const total = arr.reduce((s, a) => s + a.w, 0);
+  let r = Math.random() * total;
+  for (const a of arr) {
+    if ((r -= a.w) <= 0) return a;
+  }
+  return arr[arr.length - 1];        // Fallback (shouldn't hit)
+} 
+const MEASURE_BEATS = 4;       // 4/4
+
   const HIST = 5;
   const HOLD_MS = 3000;
   const BUF_SIZE = 4096;              // ≈ 93 ms @ 44.1 kHz
+
+  const TS_OPTIONS = [
+  { label: '2/4', beats: 2 },
+  { label: '3/4', beats: 3 },
+  { label: '4/4', beats: 4 },
+  { label: '6/8', beats: 6 }
+];
+
+let selectedTS = TS_OPTIONS[2].label;   // default "4/4"
 
   let km: KeyManager;
 
@@ -164,36 +190,81 @@ function accidentalCount(key: string): number {
   while (vfDiv.firstChild) vfDiv.removeChild(vfDiv.firstChild);
 }
 
-function calcStaveWidth(noteCount: number, accCount: number): number {
-  const BASE   = 120;   // clef + time sig
-  const PER_Q  = 70;    // each quarter note
-  const PER_ACC = 18;   // each accidental glyph needs ~18 px
 
-  return BASE + PER_Q * noteCount + PER_ACC * accCount;
+function calcStaveWidth(ns: StaveNote[], accCount: number): number {
+  const BASE = 120;               // clef + key sig + time sig block
+  const PER_ACC = 18;             // each accidental
+
+  /* width “price-list” per duration -------------------------- */
+  const DUR_W: Record<string, number> = {
+    h: 90,        // half-note (big oval + stem)
+    q: 60,        // quarter
+    "8": 75       // eighth (flag needs extra space)
+  };
+
+  const noteW = ns.reduce((px, n) => {
+    const key = n.getDuration();          // 'h' | 'q' | '8'
+    return px + (DUR_W[key] ?? 60);       // fall-back = quarter width
+  }, 0);
+
+  return BASE + noteW + PER_ACC * accCount + 20;  // +20 px right-hand pad
 }
 
+const MARGIN = 20;             // px on each side of the bar
+
+/* ------------------------------------------------------------ */
+/* renderStaff()  (do the identical tweak in renderAnalysisLine)*/
+/* ------------------------------------------------------------ */
+function measureLead(ctx: RenderContext, beats: number) {
+  // A scratch stave that we never draw – just to ask VexFlow for metrics
+  const ghost = new Stave(0, 0, 0)
+                  .addClef(selectedClef)
+                  .addTimeSignature(`${beats}/4`)
+                  .addKeySignature(currentKeySig)
+                  .setContext(ctx);
+  return ghost.getNoteStartX() - ghost.getX();     // px
+}
+
+/* ------------------------------------------------------------ */
+/* inside renderStaff()   (identical logic in renderAnalysisLine)*/
+/* ------------------------------------------------------------ */
 function renderStaff(beats: number): void {
   if (!vfDiv) return;
 
-  const accCnt = accidentalCount(currentKeySig);
-  const width  = calcStaveWidth(notes.length, accCnt);
+  /* Build the Voice first ------------------------------------ */
+  const voice = new Voice({ numBeats: beats, beatValue: 4 })
+                  .addTickables(notes);
 
+  /* 1️⃣  ask VexFlow for the true minimum width --------------- */
+  const fmt = new Formatter();
+  fmt.joinVoices([voice])              // (or fmt.preCalculateMinTotalWidth)
+     .format([voice], 0);              // 0 ⇒ no justification yet
+  const minWidth = fmt.getMinTotalWidth();   // px
+
+  /* 2️⃣  keep your heuristic as a floor ----------------------- */
+  const width = calcStaveWidth(
+    notes,
+    accidentalCount(currentKeySig)
+  );
+
+
+  /* 3️⃣  draw exactly as before ------------------------------- */
   vfDiv.innerHTML = '';
   const renderer = new Renderer(vfDiv, Renderer.Backends.SVG);
-  renderer.resize(width + 40, 140);
-  const ctx = renderer.getContext();
+  renderer.resize(width, 140);
+  const ctx   = renderer.getContext();
 
   const stave = new Stave(10, 20, width)
-    .addClef(selectedClef)
-    .addTimeSignature('8/4')
-    .addKeySignature(currentKeySig);
+                  .addClef(selectedClef)
+                  .addTimeSignature(`${beats}/4`)
+                  .addKeySignature(currentKeySig);
   stave.setContext(ctx).draw();
 
-  const voice = new Voice({ numBeats: beats, beatValue: 4 }).addTickables(notes);
   Accidental.applyAccidentals([voice], currentKeySig);
-
   new Formatter().joinVoices([voice]).format([voice], width - 60);
   voice.draw(ctx, stave);
+
+  Beam.generateBeams(notes).forEach(b => b.setContext(ctx).draw());
 }
 
 
@@ -202,11 +273,11 @@ function renderStaff(beats: number): void {
   function randomNote(): string {
   const OCTAVES = CLEF_RANGES[selectedClef];
 
-  /* 1. choose diatonic vs chromatic */
-  const pick  = Math.random();
-  const root  = pick < 0.65
+  /* 1. choose diatonic vs chromatic ------------------------ */
+  const ACC_P = 0.15;               // ← 15 % chance of an accidental
+  const root  = Math.random() > ACC_P          /* diatonic 85 % */
     ? NOTE_LETTERS[Math.floor(Math.random() * NOTE_LETTERS.length)]
-    : (() => {
+    : (() => {                                  /* chromatic 15 % */
         const letter = NOTE_LETTERS[Math.floor(Math.random() * NOTE_LETTERS.length)];
         const acc    = Math.random() < 0.5 ? '#' : 'b';
         return `${letter}${acc}`;
@@ -231,49 +302,38 @@ function renderStaff(beats: number): void {
 
 
 function generateRandomLine() {
-  msreCount = -1
-  line = [];
-  target = [];
-  i = 0;
+   msreCount = -1;
+   line = []; target = []; i = 0;
 
-  currentKeySig = resolveKey();
-  km = new KeyManager(currentKeySig);
+   currentKeySig = resolveKey();
+   km = new KeyManager(currentKeySig);
+  /* ----- create a single 4/4 measure with mixed values --------------- */
+  notes = [];
+  let beatsLeft = MEASURE_BEATS;
 
-  /* ----- create 8 StaveNotes ---------------------------------------- */
-  notes = Array.from({ length: 8 }, () => {
-    const key   = randomNote();                 // pushes into line[] / target[]
-    const note  = new StaveNote({ keys:[key], duration:'q', clef:selectedClef });
+  while (beatsLeft > 0) {
+    // only choose values that still fit
+    const choice = pickWeighted(
+      DURATIONS.filter(d => d.beats <= beatsLeft)
+    );
+    beatsLeft -= choice.beats;
 
-    // attach accidental only if KeyManager says it's new
-    const sel = km.getAccidental(key.split('/')[0]);   // helper to peek current accidental
+    const keyStr  = randomNote();                       // pushes to line[] / target[]
+    const note    = new StaveNote({                     // e.g. dur: '8', 'q', 'h'
+      keys: [keyStr],
+      duration: choice.dur,
+     clef: selectedClef
+   });
+
+    const sel = km.getAccidental(keyStr.split('/')[0]);
     if (sel?.change && sel.accidental) {
-      note.addModifier(new Accidental(sel.accidental), 0);   // correct arg order
+      note.addModifier(new Accidental(sel.accidental), 0);
     }
-    return note;
-  });
+    notes.push(note);
+  }
 
-  const accCnt = accidentalCount(currentKeySig);
-  const width  = calcStaveWidth(notes.length, accCnt);
-
-  vfDiv.innerHTML = '';
-  const renderer = new Renderer(vfDiv, Renderer.Backends.SVG);
-  renderer.resize(width + 40, 140);   // 20-px side margins
-  const ctx = renderer.getContext();
-
-  const stave = new Stave(10, 20, width)
-    .addClef(selectedClef)
-    .addTimeSignature('8/4')
-    .addKeySignature(currentKeySig);
-  stave.setContext(ctx).draw();
-
-
-  
-  const voice = new Voice({ numBeats: 8, beatValue: 4 }).addTickables(notes);
-  Accidental.applyAccidentals([voice], currentKeySig);
-
-  new Formatter().joinVoices([voice]).format([voice], width - 60);
-  voice.draw(ctx, stave);
-}
+  renderStaff(MEASURE_BEATS);    // ‹── pass real beat count
+ }
 
 
 
@@ -432,7 +492,7 @@ m2 C: E4 D4 C4
 
   // rebuild stave with matching time-signature
   const accCnt  = accidentalCount(currentKeySig);
-  const width   = calcStaveWidth(notes.length, accCnt);
+  const width   = calcStaveWidth(notes, accCnt);
 
   vfDiv.innerHTML = '';
   const renderer  = new Renderer(vfDiv, Renderer.Backends.SVG);
@@ -465,6 +525,69 @@ async function clefchanged(){
 
   /* ----------  DOM refs ---------- */
   let vfDiv: HTMLDivElement;
+
+
+  let bpm = 120;              // user-adjustable tempo
+let metroOn = false;        // is the metronome running?
+let tickInterval: number | null = null;
+
+let beatsPerBar = 4;                   // used by metronome
+let metroIdx = 0;   
+
+/* single click “beep” */
+function playClick(accent = false) {
+  if (!ctx) return;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.frequency.value = accent ? 1600 : 1000;   // higher pitch on beat-1
+  gain.gain.value     = accent ? 0.35  : 0.20;  // louder on beat-1
+  osc.connect(gain).connect(ctx.destination);
+  osc.start();
+  osc.stop(ctx.currentTime + 0.05);
+}
+
+function metronomeTick() {
+  playClick(metroIdx === 0);           // accent the first beat
+  metroIdx = (metroIdx + 1) % beatsPerBar;
+}
+
+/* start / stop helpers */
+function startMetronome() {
+  stopMetronome();          // clear any old interval
+  metroIdx = 0;             // restart the bar
+  metronomeTick();          // immediate first click
+  tickInterval = window.setInterval(metronomeTick, 60000 / bpm);
+  metroOn = true;
+}
+
+function stopMetronome() {
+  if (tickInterval !== null) clearInterval(tickInterval);
+  tickInterval = null;
+  metroOn = false;
+}
+function toggleMetronome() {            // button handler
+  metroOn ? stopMetronome() : startMetronome();
+}
+
+/* if BPM changes while it’s running, reschedule automatically */
+$: if (metroOn) {
+  stopMetronome();
+  startMetronome();
+}
+
+/* DON’T FORGET: clean up onDestroy */
+onDestroy(() => {
+  stopMetronome();                      // silence clicks when leaving
+});
+
+function tsChanged() {
+  const opt = TS_OPTIONS.find(o => o.label === selectedTS);
+  if (opt) {
+    beatsPerBar = opt.beats;  // tells metronome how many clicks per bar
+    metroIdx = 0;             // restart bar so accent lands correctly
+  }
+}
+
 </script>
 
 <div class="flex flex-col items-center justify-center h-screen gap-6 text-center">
@@ -511,6 +634,39 @@ async function clefchanged(){
   <div class="text-xs opacity-70">current loudness: {loudness.toFixed(1)} dBFS</div>
   <footer class="text-xs opacity-60">buncha updates soon for variety soon</footer>
   <!-- textarea + new button -->
+
+  <div class="flex items-center gap-3 mt-3">
+
+    <!-- BPM -->
+    <label class="flex items-center gap-1 text-sm">
+      BPM:
+      <input
+        type="number"
+        min="40" max="240" step="1"
+        bind:value={bpm}
+        class="w-20 rounded border px-1 text-center"
+      />
+    </label>
+  
+    <!-- Start / Stop -->
+    <button
+      on:click={toggleMetronome}
+      class="rounded-md bg-green-600 px-4 py-2 text-white"
+    >
+      {metroOn ? 'Stop' : 'Start'} Metronome
+    </button>
+  
+    <!-- Time-Signature -->
+    <label class="flex items-center gap-1 text-sm">
+      Time Sig:
+      <select bind:value={selectedTS} on:change={tsChanged}
+              class="rounded border px-2 py-1">
+        {#each TS_OPTIONS as o}
+          <option value={o.label}>{o.label}</option>
+        {/each}
+      </select>
+    </label>
+  </div>
 
 
 
