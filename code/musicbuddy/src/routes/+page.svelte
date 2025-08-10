@@ -3,7 +3,6 @@
   import { YIN } from 'pitchfinder';
   import { Renderer, RenderContext, Stave, StaveNote, Voice, Formatter, Accidental, KeyManager, Beam } from 'vexflow';
   import { parseMusicXML, type MeasureData } from './analysisToStave';
-	import { render } from 'svelte/server';
   /* --- constants & helpers --- */
   const NOTES = ['C','C♯','D','D♯','E','F','F♯','G','G♯','A','A♯','B'];
   const CLEFS = ['bass','alto','treble'] as const;
@@ -34,6 +33,33 @@ function activeDurations(beatsLeft: number) {
     )
   );
 }
+
+
+  import { supabase } from '$lib/supabaseClient';
+
+  let userEmail: string = '';
+  let emailInput: string = '';
+
+  onMount(async () => {
+    const { data } = await supabase.auth.getSession();
+    userEmail = data.session?.user?.email ?? '';
+    supabase.auth.onAuthStateChange((_event, session) => {
+      userEmail = session?.user?.email ?? '';
+    });
+  });
+
+  async function signInWithEmail() {
+    if (!emailInput) return alert('Enter an email first');
+    const { error } = await supabase.auth.signInWithOtp({ email: emailInput });
+    if (error) alert(error.message);
+    else alert('Magic link sent — check your email and click it.');
+  }
+
+  async function signOut() {
+    await supabase.auth.signOut();
+  }
+
+
 
 
 /* weighted-random helper */
@@ -611,8 +637,65 @@ function tsChanged() {
   }
 }
 
-</script>
 
+  // Your song list
+  const songs = [
+    "Ode to Joy",
+    "Mary Had a Little Lamb",
+    "Twinkle Twinkle Little Star",
+    "Baa Baa Black Sheep",
+    "Row, Row, Row Your Boat",
+    "London Bridge is Falling Down",
+    "Frère Jacques",
+    "Jingle Bells",
+    "Yankee Doodle",
+    "Für Elise",
+    "Minuet in G",
+    "Canon in D",
+    "Eine kleine Nachtmusik",
+    "The Blue Danube",
+    "In the Hall of the Mountain King",
+    "Spring",
+    "Happy Birthday",
+    "Scarborough Fair",
+    "Amazing Grace",
+    "Oh! Susanna",
+    "Aura Lee",
+    "She’ll Be Comin’ Round the Mountain",
+    "Home on the Range",
+    "Auld Lang Syne",
+    "Danny Boy",
+    "Silent Night",
+    "Deck the Halls",
+    "We Wish You a Merry Christmas",
+    "The First Noel",
+    "O Christmas Tree",
+    "Up on the Housetop"
+  ];
+
+function setSongFromName(name:string) {
+    // Use your existing setSong function
+    setSong(name.toLowerCase().replace(/ /g, "-"), true);
+  }
+
+</script>
+<div class="flex items-center gap-2 my-3">
+  {#if userEmail}
+    <div class="text-sm opacity-70">Signed in as {userEmail}</div>
+    <button on:click={signOut} class="rounded px-3 py-2 border" aria-label="Sign out">Sign out</button>
+  {:else}
+    <input
+      class="rounded border px-2 py-1"
+      type="email"
+      bind:value={emailInput}
+      placeholder="you@example.com"
+      aria-label="Email address"
+    />
+    <button on:click={signInWithEmail} class="rounded px-3 py-2 border" aria-label="Send magic link">
+      Sign in (Email)
+    </button>
+  {/if}
+</div>
 <div class="flex flex-col items-center justify-center h-screen gap-6 text-center">
   <h1 class="text-3xl font-bold">Ethan's Music Buddy</h1>
 
@@ -756,22 +839,15 @@ function tsChanged() {
   </div>
 
   <!-- ▶ Right side: presets (no handlers yet) -->
-  <div class="flex-1 flex flex-col justify-start gap-2">
-    <button 
-      on:click={() => setSong('hot-cross-buns', true)}
-      class="w-full rounded bg-purple-500 px-4 py-2 text-white">
-      Hot Cross Buns
-    </button>
-    <button 
-      on:click={() => setSong('twinkle-twinkle-little-star', true)}
-      class="w-full rounded bg-purple-500 px-4 py-2 text-white">
-      Twinkle Twinkle
-    </button>
-    <button 
-      on:click={() => setSong('mary-had-a-little-lamb', true)}
-      class="w-full rounded bg-purple-500 px-4 py-2 text-white">
-      Mary Had a Little Lamb
-    </button>
+  <div class="flex flex-col gap-2 border rounded p-2" style="max-height: 12rem; overflow-y: auto;">
+    {#each songs as song}
+      <button
+        on:click={() => setSongFromName(song)}
+        class="w-full rounded bg-purple-500 px-4 py-2 text-white"
+      >
+        {song}
+      </button>
+    {/each}
   </div>
 
 </div>
