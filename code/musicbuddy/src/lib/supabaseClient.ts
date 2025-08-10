@@ -1,11 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
-import { env } from '$env/dynamic/public'; // dynamic avoids build-time export issues
+import { PUBLIC_SUPABASE_URL, PUBLIC_SUPABASE_ANON_KEY } from '$env/static/public';
 
-const url = env.PUBLIC_SUPABASE_URL;
-const key = env.PUBLIC_SUPABASE_ANON_KEY;
-
-if (!url || !key) console.error('Missing PUBLIC_SUPABASE_URL or PUBLIC_SUPABASE_ANON_KEY');
-
-export const supabase = createClient(url!, key!);
+export const supabase = createClient(PUBLIC_SUPABASE_URL, PUBLIC_SUPABASE_ANON_KEY);
 
 
