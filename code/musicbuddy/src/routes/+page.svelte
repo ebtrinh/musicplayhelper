@@ -24,6 +24,18 @@
   { dur: '8', beats: 0.5, w: 1 }    // eighths  →  ~20 %
 ] as const;
 
+function activeDurations(beatsLeft: number) {
+  return DURATIONS.filter(d =>
+    d.beats <= beatsLeft &&
+    (
+      d.dur === 'q' ||
+      (d.dur === 'h' && enableHalves) ||
+      (d.dur === '8' && enableEighths)
+    )
+  );
+}
+
+
 /* weighted-random helper */
 function pickWeighted<T extends { w: number }>(arr: T[]): T {
   const total = arr.reduce((s, a) => s + a.w, 0);
@@ -112,6 +124,9 @@ function accidentalCount(key: string): number {
   let lastHeard = 0;                     // ms timestamp of last valid pitch
   let line: string[] = [];      // pretty for display (“D♭4”)
   let target: number[] = [];    // canonical MIDI numbers (61)
+  let enableHalves  = true;   // toggle for half notes
+  let enableEighths = true;   // toggle for eighth notes
+
 
   /* --- audio setup --- */
   let ctx:AudioContext, analyser:AnalyserNode;
@@ -231,41 +246,46 @@ function measureLead(ctx: RenderContext, beats: number) {
 function renderStaff(beats: number): void {
   if (!vfDiv) return;
 
-  /* Build the Voice first ------------------------------------ */
-  const voice = new Voice({ numBeats: beats, beatValue: 4 })
-                  .addTickables(notes);
+  const voice = new Voice({ numBeats: beats, beatValue: 4 }).addTickables(notes);
 
-  /* 1️⃣  ask VexFlow for the true minimum width --------------- */
+  // Ask VexFlow what the notes need (no justification yet)
   const fmt = new Formatter();
-  fmt.joinVoices([voice])              // (or fmt.preCalculateMinTotalWidth)
-     .format([voice], 0);              // 0 ⇒ no justification yet
-  const minWidth = fmt.getMinTotalWidth();   // px
+  fmt.joinVoices([voice]).format([voice], 0);
+  const minNotesWidth = fmt.getMinTotalWidth(); // px the notes themselves need
 
-  /* 2️⃣  keep your heuristic as a floor ----------------------- */
-  const width = calcStaveWidth(
-    notes,
-    accidentalCount(currentKeySig)
-  );
-
-
-  /* 3️⃣  draw exactly as before ------------------------------- */
+  // Build a renderer & context (temporary small width; we’ll resize)
   vfDiv.innerHTML = '';
   const renderer = new Renderer(vfDiv, Renderer.Backends.SVG);
-  renderer.resize(width, 140);
-  const ctx   = renderer.getContext();
+  renderer.resize(10, 140);
+  const ctx = renderer.getContext();
 
+  // How wide is the clef+key+time block (“lead-in”)?
+  const leadIn = measureLead(ctx, beats);
+
+  // Your heuristic as a floor, but include enough for notes + lead-in
+  const accCnt = accidentalCount(currentKeySig);
+  const heuristic = calcStaveWidth(notes, accCnt);
+  const width = Math.ceil(Math.max(heuristic, minNotesWidth + leadIn + 20)); // +pad
+
+  // Now draw with the true width
+  renderer.resize(width, 140);
   const stave = new Stave(10, 20, width)
-                  .addClef(selectedClef)
-                  .addTimeSignature(`${beats}/4`)
-                  .addKeySignature(currentKeySig);
+    .addClef(selectedClef)
+    .addTimeSignature(`${beats}/4`)
+    .addKeySignature(currentKeySig);
+
   stave.setContext(ctx).draw();
 
+  // Accidental resolution before formatting
   Accidental.applyAccidentals([voice], currentKeySig);
-  new Formatter().joinVoices([voice]).format([voice], width - 60);
+
+  // Let VexFlow justify using the stave’s noteStartX automatically
+  new Formatter().joinVoices([voice]).formatToStave([voice], stave);
   voice.draw(ctx, stave);
 
   Beam.generateBeams(notes).forEach(b => b.setContext(ctx).draw());
 }
+
 
 
 
@@ -274,7 +294,7 @@ function renderStaff(beats: number): void {
   const OCTAVES = CLEF_RANGES[selectedClef];
 
   /* 1. choose diatonic vs chromatic ------------------------ */
-  const ACC_P = 0.15;               // ← 15 % chance of an accidental
+  const ACC_P = 0.25;               // ← 15 % chance of an accidental
   const root  = Math.random() > ACC_P          /* diatonic 85 % */
     ? NOTE_LETTERS[Math.floor(Math.random() * NOTE_LETTERS.length)]
     : (() => {                                  /* chromatic 15 % */
@@ -312,25 +332,23 @@ function generateRandomLine() {
   let beatsLeft = MEASURE_BEATS;
 
   while (beatsLeft > 0) {
-    // only choose values that still fit
-    const choice = pickWeighted(
-      DURATIONS.filter(d => d.beats <= beatsLeft)
-    );
-    beatsLeft -= choice.beats;
+  const options = activeDurations(beatsLeft);
+  // Safety: if no options (shouldn't happen in 4/4), fall back to quarters
+  const pickFrom = options.length ? options : DURATIONS.filter(d => d.dur === 'q');
+  const choice = pickWeighted(pickFrom);
 
-    const keyStr  = randomNote();                       // pushes to line[] / target[]
-    const note    = new StaveNote({                     // e.g. dur: '8', 'q', 'h'
-      keys: [keyStr],
-      duration: choice.dur,
-     clef: selectedClef
-   });
+  beatsLeft -= choice.beats;
 
-    const sel = km.getAccidental(keyStr.split('/')[0]);
-    if (sel?.change && sel.accidental) {
-      note.addModifier(new Accidental(sel.accidental), 0);
-    }
-    notes.push(note);
-  }
+  const keyStr = randomNote();
+  const note = new StaveNote({
+    keys: [keyStr],
+    duration: choice.dur,
+    clef: selectedClef
+  });
+
+  // no explicit accidentals (keeps the staff clean/diatonic)
+  notes.push(note);
+}
 
   renderStaff(MEASURE_BEATS);    // ‹── pass real beat count
  }
@@ -462,54 +480,59 @@ m2 C: E4 D4 C4
 
   /* 3 ─── render the first staff described in the parsed data */
   async function renderAnalysisLine() {
-  if (msreCount == -1 || measures == undefined){
+  if (msreCount == -1 || measures == undefined) {
     msreCount = 0;
-    await getMusicXML()
+    await getMusicXML();
   }
-    if (!measures.length) return alert('Nothing parsed');
-  
-  // grab every chord from the FIRST measure
-  
-  
-  totalMsre = measures.length;
-  notes         = measures[msreCount].notes;          // could be 1, 2, … chords
-  currentKeySig = measures[msreCount].key.split(' ')[0];
-  km            = new KeyManager(currentKeySig);
-  line = []
-  target = []
-  console.log(notes)
-  console.log(notes[0].keys[0])
-  for (let x = 0; x < notes.length; x++) {
-    line.push(notes[x].keys[0].replace('/', ''))
-    target.push(canon(notes[x].keys[0].replace('/', '')))
-  }
-  i = 0
-  console.log(line)
-  // ─── ADAPT THE VOICE & STAVE TO NOTE COUNT ───
-  const beats   = notes.length;               // 1 chord → 1 beat
-  const voice   = new Voice({ numBeats: beats, beatValue: 4 })
-                    .addTickables(notes);
+  if (!measures.length) return alert('Nothing parsed');
 
-  // rebuild stave with matching time-signature
-  const accCnt  = accidentalCount(currentKeySig);
-  const width   = calcStaveWidth(notes, accCnt);
+  totalMsre   = measures.length;
+  notes       = measures[msreCount].notes;
+  currentKeySig = measures[msreCount].key.split(' ')[0];
+  km          = new KeyManager(currentKeySig);
+
+  // build line/target used by your matcher
+  line = []; target = []; i = 0;
+  for (let x = 0; x < notes.length; x++) {
+    const k = notes[x].keys[0];          // e.g. "d#/4"
+    line.push(k.replace('/', ''));
+    target.push(canon(k.replace('/', '')));
+  }
+
+  // ✅ define beats BEFORE you reference it anywhere
+  const beats = notes.length;            // 1 chord per quarter note in 4/4
+  const voice = new Voice({ numBeats: beats, beatValue: 4 }).addTickables(notes);
+
+  // --- compute a safe width (no cut-offs, no huge gaps) ---
+  const fmt = new Formatter();
+  fmt.joinVoices([voice]).format([voice], 0);
+  const minNotesWidth = fmt.getMinTotalWidth();
 
   vfDiv.innerHTML = '';
-  const renderer  = new Renderer(vfDiv, Renderer.Backends.SVG);
-  renderer.resize(width + 40, 140);
-  const ctx       = renderer.getContext();
+  const renderer = new Renderer(vfDiv, Renderer.Backends.SVG);
+  renderer.resize(10, 140);
+  const ctx = renderer.getContext();
 
+  const leadIn   = measureLead(ctx, beats);                // clef+key+TS block
+  const accCnt   = accidentalCount(currentKeySig);
+  const heuristic = calcStaveWidth(notes, accCnt);
+  const width    = Math.ceil(Math.max(heuristic, minNotesWidth + leadIn + 20));
+
+  renderer.resize(width, 140);
   const stave = new Stave(10, 20, width)
-                 .addClef(selectedClef)
-                 .addTimeSignature(`${beats}/4`)   // ← dynamic
-                 .addKeySignature(currentKeySig);
+    .addClef(selectedClef)
+    .addTimeSignature(`${beats}/4`)
+    .addKeySignature(currentKeySig);
 
   stave.setContext(ctx).draw();
   Accidental.applyAccidentals([voice], currentKeySig);
 
-  new Formatter().joinVoices([voice]).format([voice], width - 60);
+  new Formatter().joinVoices([voice]).formatToStave([voice], stave);
   voice.draw(ctx, stave);
+
+  Beam.generateBeams(notes).forEach(b => b.setContext(ctx).draw());
 }
+
 
 async function clefchanged(){
   if (msreCount == -1){
@@ -616,6 +639,49 @@ function tsChanged() {
     </select>
   </label>
 
+  <div class="mt-3 flex items-center gap-6">
+    <!-- Half notes toggle -->
+    <label class="flex items-center gap-2 text-sm cursor-pointer">
+      <span>Half notes</span>
+      <button
+        type="button"
+        aria-label="Toggle half notes on or off"
+        class="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition duration-200 ease-in-out"
+        class:bg-green-500={enableHalves}
+        class:bg-gray-300={!enableHalves}
+        on:click={() => { enableHalves = !enableHalves; generateRandomLine(); }}
+        aria-pressed={enableHalves}
+      >
+        <!-- BEFORE (invalid) -->
+  <!-- AFTER (valid) -->
+  <span
+    class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out"
+    class:translate-x-5={enableHalves}
+    class:translate-x-0={!enableHalves}
+  ></span>
+  
+      </button>
+    </label>
+  
+    <!-- Eighth notes toggle -->
+    <label class="flex items-center gap-2 text-sm cursor-pointer">
+      <span>Eighth notes</span>
+      <button type="button"
+      aria-label="Toggle eighth notes on or off"
+      class="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition duration-200 ease-in-out"
+      class:bg-green-500={enableEighths}
+      class:bg-gray-300={!enableEighths}
+      on:click={() => { enableEighths = !enableEighths; generateRandomLine(); }}
+      aria-pressed={enableEighths}>
+        <span
+          class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out"
+          class:translate-x-5={enableEighths}
+          class:translate-x-0={!enableEighths}
+        ></span>
+      </button>
+    </label>
+  </div>
+
   <div bind:this={vfDiv}></div>
   <button on:click={generateRandomLine} class="my-4 rounded-md bg-blue-500 px-4 py-2 text-white">
     New Staff
@@ -667,6 +733,8 @@ function tsChanged() {
       </select>
     </label>
   </div>
+
+<!-- Note duration toggles -->
 
 
 
