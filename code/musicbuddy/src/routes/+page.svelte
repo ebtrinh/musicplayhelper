@@ -901,36 +901,36 @@ if (useKeyOnly) {
   }
 </script>
 
-<!-- Auth UI -->
-<div class="auth-section">
-  {#if userEmail}
-    <div class="auth-info">
-      <span class="auth-label">Signed in as:</span>
-      <span class="auth-email">{userEmail}</span>
-      <button on:click={signOut} class="auth-button signout">Sign out</button>
-    </div>
-  {:else}
-    <div class="auth-form">
-      <input
-        class="auth-input"
-        type="email"
-        bind:value={emailInput}
-        placeholder="you@example.com"
-        aria-label="Email address"
-      />
-      <button on:click={signInWithEmail} class="auth-button signin">
-        Sign in (Email)
-      </button>
-    </div>
-  {/if}
-</div>
-
 <div class="main-container">
   <!-- Header Section -->
   <header class="app-header">
     <h1 class="app-title">Music Buddy</h1>
     <p class="app-subtitle">Interactive music learning with real-time pitch detection</p>
   </header>
+
+  <!-- Auth UI -->
+  <section class="auth-section">
+    {#if userEmail}
+      <div class="auth-info">
+        <span class="auth-label">Signed in as:</span>
+        <span class="auth-email">{userEmail}</span>
+        <button on:click={signOut} class="auth-button signout">Sign out</button>
+      </div>
+    {:else}
+      <div class="auth-form">
+        <input
+          class="auth-input"
+          type="email"
+          bind:value={emailInput}
+          placeholder="you@example.com"
+          aria-label="Email address"
+        />
+        <button on:click={signInWithEmail} class="auth-button signin">
+          Sign in (Email)
+        </button>
+      </div>
+    {/if}
+  </section>
 
   <!-- Control Panel Section -->
   <section class="control-panel">
@@ -1200,7 +1200,7 @@ if (useKeyOnly) {
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
     padding: 1rem 2rem;
     margin-bottom: 2rem;
-    border-radius: 0 0 1rem 1rem;
+    border-radius: 1rem;
     box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
   }
 
