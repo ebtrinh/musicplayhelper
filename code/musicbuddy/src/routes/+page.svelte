@@ -1,10 +1,20 @@
+<!-- Google tag (gtag.js) -->
+<!-- <script async src="https://www.googletagmanager.com/gtag/js?id=G-M8YCNKB6FZ"></script>
+<script>
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+
+  gtag('config', 'G-M8YCNKB6FZ');
+</script> -->
+
 <script lang="ts">
   // Google Analytics
   if (typeof window !== 'undefined') {
     // Load Google Analytics script
     const script = document.createElement('script');
     script.async = true;
-    script.src = "https://www.googletagmanager.com/gtag/js?id=G-2BX4N972Z3";
+    script.src = "https://www.googletagmanager.com/gtag/js?id=G-M8YCNKB6FZ";
     document.head.appendChild(script);
     
     // Initialize Google Analytics
@@ -13,7 +23,7 @@
       (window as any).dataLayer.push(args);
     };
     (window as any).gtag('js', new Date());
-    (window as any).gtag('config', 'G-2BX4N972Z3');
+    (window as any).gtag('config', 'G-M8YCNKB6FZ');
   }
   import { onMount, onDestroy } from 'svelte';
   import { YIN } from 'pitchfinder';
@@ -905,277 +915,874 @@ if (useKeyOnly) {
 </script>
 
 <!-- Auth UI -->
-<div class="flex items-center gap-2 my-3">
+<div class="auth-section">
   {#if userEmail}
-    <div class="text-sm opacity-70">Signed in as {userEmail}</div>
-    <button on:click={signOut} class="rounded px-3 py-2 border" aria-label="Sign out">Sign out</button>
+    <div class="auth-info">
+      <span class="auth-label">Signed in as:</span>
+      <span class="auth-email">{userEmail}</span>
+      <button on:click={signOut} class="auth-button signout">Sign out</button>
+    </div>
   {:else}
-    <input
-      class="rounded border px-2 py-1"
-      type="email"
-      bind:value={emailInput}
-      placeholder="you@example.com"
-      aria-label="Email address"
-    /> <!-- email input -->
-    <button on:click={signInWithEmail} class="rounded px-3 py-2 border" aria-label="Send magic link">
-      Sign in (Email)
-    </button> <!-- sign in (email) -->
+    <div class="auth-form">
+      <input
+        class="auth-input"
+        type="email"
+        bind:value={emailInput}
+        placeholder="you@example.com"
+        aria-label="Email address"
+      />
+      <button on:click={signInWithEmail} class="auth-button signin">
+        Sign in (Email)
+      </button>
+    </div>
   {/if}
-</div> <!-- auth ui -->
+</div>
 
-<div class="flex flex-col items-center justify-center h-screen gap-6 text-center">
-  <h1 class="text-3xl font-bold">Music buddy</h1>
+<div class="main-container">
+  <!-- Header Section -->
+  <header class="app-header">
+    <h1 class="app-title">Music Buddy</h1>
+    <p class="app-subtitle">Interactive music learning with real-time pitch detection</p>
+  </header>
 
-  <!-- Clef picker -->
-  <label class="flex items-center gap-2">
-    <span class="text-sm">Clef:</span>
-    <select bind:value={selectedClef} on:change={clefchanged} class="rounded border px-2 py-1">
-      {#each CLEFS as c}
-        <option value={c}>{c.charAt(0).toUpperCase() + c.slice(1)}</option>
-      {/each}
-    </select>
-  </label>
+  <!-- Control Panel Section -->
+  <section class="control-panel">
+    <div class="control-grid">
+      <!-- Clef and Key Selection -->
+      <div class="control-group">
+        <label class="control-label">
+          <span>Clef:</span>
+          <select bind:value={selectedClef} on:change={clefchanged} class="control-select">
+            {#each CLEFS as c}
+              <option value={c}>{c.charAt(0).toUpperCase() + c.slice(1)}</option>
+            {/each}
+          </select>
+        </label>
+        
+        <label class="control-label">
+          <span>Key Signature:</span>
+          <select
+            bind:value={selectedKeySig}
+            on:change={generateRandomLine}
+            class="control-select"
+          >
+            {#each KEY_SIGS as ks}
+              <option value={ks.value}>{ks.label}</option>
+            {/each}
+          </select>
+        </label>
+      </div>
 
-  <!-- Key picker -->
-  <label class="flex items-center gap-2">
-    <span class="text-sm">Key&nbsp;Sig:</span>
-    <select
-      bind:value={selectedKeySig}
-      on:change={generateRandomLine}
-      class="rounded border px-2 py-1"
-    >
-      {#each KEY_SIGS as ks}
-        <option value={ks.value}>{ks.label}</option>
-      {/each}
-    </select>
-  </label>
+      <!-- Duration Toggles -->
+      <div class="control-group">
+        <div class="toggle-group">
+          <label class="toggle-label">
+            <span>Half notes</span>
+            <button
+              type="button"
+              aria-label="Toggle half notes on or off"
+              class="toggle-switch"
+              class:active={enableHalves}
+              on:click={() => { enableHalves = !enableHalves; generateRandomLine(); }}
+              aria-pressed={enableHalves}
+            >
+              <span class="toggle-slider"></span>
+            </button>
+          </label>
 
-  <!-- Duration toggles -->
-  <div class="mt-3 flex items-center gap-6">
-    <!-- Half notes toggle -->
-    <label class="flex items-center gap-2 text-sm cursor-pointer">
-      <span>Half notes</span>
-      <button
-        type="button"
-        aria-label="Toggle half notes on or off"
-        class="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition duration-200 ease-in-out"
-        class:bg-green-500={enableHalves}
-        class:bg-gray-300={!enableHalves}
-        on:click={() => { enableHalves = !enableHalves; generateRandomLine(); }}
-        aria-pressed={enableHalves}
-      >
-        <span
-          class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out"
-          class:translate-x-5={enableHalves}
-          class:translate-x-0={!enableHalves}
-        ></span>
-      </button> <!-- half notes toggle -->
-    </label>
+          <label class="toggle-label">
+            <span>Eighth notes</span>
+            <button
+              type="button"
+              aria-label="Toggle eighth notes on or off"
+              class="toggle-switch"
+              class:active={enableEighths}
+              on:click={() => { enableEighths = !enableEighths; generateRandomLine(); }}
+              aria-pressed={enableEighths}
+            >
+              <span class="toggle-slider"></span>
+            </button>
+          </label>
 
-    <!-- Eighth notes toggle -->
-    <label class="flex items-center gap-2 text-sm cursor-pointer">
-      <span>Eighth notes</span>
-      <button
-        type="button"
-        aria-label="Toggle eighth notes on or off"
-        class="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition duration-200 ease-in-out"
-        class:bg-green-500={enableEighths}
-        class:bg-gray-300={!enableEighths}
-        on:click={() => { enableEighths = !enableEighths; generateRandomLine(); }}
-        aria-pressed={enableEighths}
-      >
-        <span
-          class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out"
-          class:translate-x-5={enableEighths}
-          class:translate-x-0={!enableEighths}
-        ></span>
-      </button> <!-- eighth notes toggle -->
-    </label>
+          <label class="toggle-label">
+            <span>Key-only notes</span>
+            <button
+              type="button"
+              aria-label="Toggle key-only notes on or off"
+              class="toggle-switch"
+              class:active={useKeyOnly}
+              on:click={() => { useKeyOnly = !useKeyOnly; generateRandomLine(); }}
+              aria-pressed={useKeyOnly}
+            >
+              <span class="toggle-slider"></span>
+            </button>
+          </label>
+        </div>
 
-    <!-- Key-only notes toggle -->
-    <label class="flex items-center gap-2 text-sm cursor-pointer">
-      <span>Key-only notes</span>
-      <button
-        type="button"
-        aria-label="Toggle key-only notes on or off"
-        class="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition duration-200 ease-in-out"
-        class:bg-green-500={useKeyOnly}
-        class:bg-gray-300={!useKeyOnly}
-        on:click={() => { useKeyOnly = !useKeyOnly; generateRandomLine(); }}
-        aria-pressed={useKeyOnly}
-      >
-        <span
-          class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out"
-          class:translate-x-5={useKeyOnly}
-          class:translate-x-0={!useKeyOnly}
-        ></span>
-      </button>
-      {#if !useKeyOnly}
-  <div class="flex items-center gap-6">
-    <!-- Naturals -->
-    <label class="flex items-center gap-2 text-sm cursor-pointer">
-      <span>Naturals</span>
-      <button
-        type="button"
-        aria-label="Toggle natural accidentals"
-        class="relative inline-flex h-6 w-11 rounded-full border-2 transition"
-        class:bg-green-500={allowNaturals}
-        class:bg-gray-300={!allowNaturals}
-        on:click={() => { allowNaturals = !allowNaturals; generateRandomLine(); }}
-        aria-pressed={allowNaturals}
-      >
-        <span class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition"
-              class:translate-x-5={allowNaturals}
-              class:translate-x-0={!allowNaturals}></span>
-      </button>
-    </label>
+        {#if !useKeyOnly}
+          <div class="accidental-toggles">
+            <label class="toggle-label small">
+              <span>Naturals</span>
+              <button
+                type="button"
+                aria-label="Toggle natural accidentals"
+                class="toggle-switch small"
+                class:active={allowNaturals}
+                on:click={() => { allowNaturals = !allowNaturals; generateRandomLine(); }}
+                aria-pressed={allowNaturals}
+              >
+                <span class="toggle-slider"></span>
+              </button>
+            </label>
 
-    <!-- Sharps -->
-    <label class="flex items-center gap-2 text-sm cursor-pointer">
-      <span>Sharps</span>
-      <button
-        type="button"
-        aria-label="Toggle sharp accidentals"
-        class="relative inline-flex h-6 w-11 rounded-full border-2 transition"
-        class:bg-green-500={allowSharps}
-        class:bg-gray-300={!allowSharps}
-        on:click={() => { allowSharps = !allowSharps; generateRandomLine(); }}
-        aria-pressed={allowSharps}
-      >
-        <span class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition"
-              class:translate-x-5={allowSharps}
-              class:translate-x-0={!allowSharps}></span>
-      </button>
-    </label>
+            <label class="toggle-label small">
+              <span>Sharps</span>
+              <button
+                type="button"
+                aria-label="Toggle sharp accidentals"
+                class="toggle-switch small"
+                class:active={allowSharps}
+                on:click={() => { allowSharps = !allowSharps; generateRandomLine(); }}
+                aria-pressed={allowSharps}
+              >
+                <span class="toggle-slider"></span>
+              </button>
+            </label>
 
-    <!-- Flats -->
-    <label class="flex items-center gap-2 text-sm cursor-pointer">
-      <span>Flats</span>
-      <button
-        type="button"
-        aria-label="Toggle flat accidentals"
-        class="relative inline-flex h-6 w-11 rounded-full border-2 transition"
-        class:bg-green-500={allowFlats}
-        class:bg-gray-300={!allowFlats}
-        on:click={() => { allowFlats = !allowFlats; generateRandomLine(); }}
-        aria-pressed={allowFlats}
-      >
-        <span class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition"
-              class:translate-x-5={allowFlats}
-              class:translate-x-0={!allowFlats}></span>
-      </button>
-    </label>
-  </div>
-{/if}
-    </label>
-
-  </div>
-
-  <!-- Staff + controls -->
-  <div bind:this={vfDiv}></div>
-  <button on:click={generateRandomLine} class="my-4 rounded-md bg-blue-500 px-4 py-2 text-white">
-    New Staff
-  </button>
-
-  <div class="flex flex-col items-center gap-1">
-    <div class="text-6xl font-mono">{freq || '--'} Hz</div>
-    <div class="text-5xl">{note}</div>
-    <div class="text-sm opacity-60">State: {gate}</div>
-  </div>
-
-  <label class="flex flex-col items-center gap-1">
-    <span class="text-sm">Ignore sounds quieter than {minDb} dBFS</span>
-    <input type="range" min="-60" max="-10" step="1" bind:value={minDb} class="w-64 accent-blue-500" />
-  </label>
-
-  <div class="text-xs opacity-70">current loudness: {loudness.toFixed(1)} dBFS</div>
-  <footer class="text-xs opacity-60">buncha updates soon for variety soon</footer>
-  <Metronome {ctx} />
-  <!-- Lower panel -->
-  <div class="w-full mt-8 border-t bg-gray-50 p-4 flex gap-4">
-    <!-- ◀ Left: free-form input + render + save -->
-    <div class="flex-1 flex flex-col">
-      <textarea
-        bind:value={userInput}
-        rows="6"
-        class="flex-1 w-full rounded border p-2 text-xs resize-none"
-        placeholder="Paste MusicXML here…"
-      ></textarea> <!-- custom input -->
-
-      <div class="mt-2 flex items-center gap-2 justify-end">
-        <input
-          class="rounded border px-2 py-1 text-sm"
-          placeholder="name (letters/numbers/-/_)"
-          bind:value={customName}
-          aria-label="Custom song name"
-        /> <!-- custom name -->
-         <button
-          on:click={() => setSong('', false)}
-          class="rounded bg-slate-500 px-3 py-1 text-white"
-        >
-          Render Input
-        </button> <!-- render input -->
-        <button
-          on:click={saveCustom}
-          class="rounded bg-blue-600 px-3 py-1 text-white disabled:opacity-50"
-          disabled={!userEmail}
-          aria-disabled={!userEmail}
-          aria-label="Save custom song"
-        >
-          {userEmail ? 'Save to My Account' : 'Sign in to Save'}
-        </button> <!-- save custom -->
+            <label class="toggle-label small">
+              <span>Flats</span>
+              <button
+                type="button"
+                aria-label="Toggle flat accidentals"
+                class="toggle-switch small"
+                class:active={allowFlats}
+                on:click={() => { allowFlats = !allowFlats; generateRandomLine(); }}
+                aria-pressed={allowFlats}
+              >
+                <span class="toggle-slider"></span>
+              </button>
+            </label>
+          </div>
+        {/if}
       </div>
     </div>
-    
-    <!-- ▶ Right: presets + custom list (scrollable) -->
-    <div class="flex-1 flex flex-col gap-4">
-      <!-- Presets -->
-      <div>
-        <div class="mb-2 text-sm font-semibold">Presets</div>
-        <div class="flex flex-col gap-2 border rounded p-2" style="max-height: 12rem; overflow-y: auto;">
-          {#each songs as song}
-            <button
-              on:click={() => setSongFromName(song)}
-              class="w-full rounded bg-purple-500 px-4 py-2 text-white text-left"
-              aria-label={`Load preset ${song}`}
-            >
-              {song}
-            </button>
-          {/each}
-        </div>
-      </div>
+  </section>
 
-      <!-- Custom songs -->
-      <div>
-        <div class="mb-2 text-sm font-semibold">My Custom Songs</div>
-        <div class="flex flex-col gap-2 border rounded p-2" style="max-height: 12rem; overflow-y: auto;">
-          {#if !userEmail}
-            <div class="text-xs opacity-70">Sign in to see your songs.</div>
-          {:else if customSongs.length === 0}
-            <div class="text-xs opacity-70">No songs yet. Save one!</div>
-          {:else}
-            {#each customSongs as s}
-              <div class="flex items-center gap-2">
-                <button
-                  class="flex-1 rounded bg-purple-500 px-3 py-1 text-white text-left"
-                  on:click={() => openCustom(s.name)}
-                  aria-label={`Open custom song ${s.name}`}
-                >
-                  {s.name}
-                </button>
-                <button
-                  class="rounded px-2 py-1 border"
-                  on:click={() => deleteCustom(s.name)}
-                  aria-label={`Delete custom song ${s.name}`}
-                >
-                  Delete
-                </button>
-              </div>
-            {/each}
-          {/if}
+  <!-- Staff Section -->
+  <section class="staff-section">
+    <div class="staff-container">
+      <div bind:this={vfDiv} class="staff-display"></div>
+      <button on:click={generateRandomLine} class="new-staff-button">
+        <span class="button-icon">🎵</span>
+        New Staff
+      </button>
+    </div>
+  </section>
+
+  <!-- Pitch Detection Display -->
+  <section class="pitch-display">
+    <div class="pitch-info">
+      <div class="frequency-display">
+        <span class="frequency-value">{freq || '--'}</span>
+        <span class="frequency-unit">Hz</span>
+      </div>
+      <div class="note-display">{note}</div>
+      <div class="state-indicator">State: {gate}</div>
+    </div>
+
+    <div class="audio-controls">
+      <label class="volume-control">
+        <span class="control-text">Sensitivity: {minDb} dBFS</span>
+        <input 
+          type="range" 
+          min="-60" 
+          max="-10" 
+          step="1" 
+          bind:value={minDb} 
+          class="volume-slider" 
+        />
+      </label>
+      <div class="loudness-display">
+        Current: {loudness.toFixed(1)} dBFS
+      </div>
+    </div>
+  </section>
+
+  <!-- Metronome Section -->
+  <section class="metronome-section">
+    <Metronome {ctx} />
+  </section>
+
+  <!-- Song Management Section -->
+  <section class="song-management">
+    <div class="song-panels">
+      <!-- Left Panel: Custom Input -->
+      <div class="song-panel">
+        <h3 class="panel-title">Custom MusicXML</h3>
+        <textarea
+          bind:value={userInput}
+          rows="6"
+          class="xml-input"
+          placeholder="Paste MusicXML here…"
+        ></textarea>
+        
+        <div class="input-controls">
+          <input
+            class="song-name-input"
+            placeholder="Song name (letters/numbers/-/_)"
+            bind:value={customName}
+            aria-label="Custom song name"
+          />
+          <div class="input-buttons">
+            <button
+              on:click={() => setSong('', false)}
+              class="action-button render"
+            >
+              Render
+            </button>
+            <button
+              on:click={saveCustom}
+              class="action-button save"
+              disabled={!userEmail}
+              aria-disabled={!userEmail}
+            >
+              {userEmail ? 'Save' : 'Sign in to Save'}
+            </button>
+          </div>
         </div>
       </div>
-    </div> <!-- custom songs -->
-  </div>
-  
+      
+      <!-- Right Panel: Song Library -->
+      <div class="song-panel">
+        <h3 class="panel-title">Song Library</h3>
+        
+        <!-- Preset Songs -->
+        <div class="song-category">
+          <h4 class="category-title">Preset Songs</h4>
+          <div class="song-list preset-songs">
+            {#each songs as song}
+              <button
+                on:click={() => setSongFromName(song)}
+                class="song-button preset"
+                aria-label={`Load preset ${song}`}
+              >
+                {song}
+              </button>
+            {/each}
+          </div>
+        </div>
+
+        <!-- Custom Songs -->
+        <div class="song-category">
+          <h4 class="category-title">My Songs</h4>
+          <div class="song-list custom-songs">
+            {#if !userEmail}
+              <div class="no-songs">Sign in to see your songs</div>
+            {:else if customSongs.length === 0}
+              <div class="no-songs">No songs yet. Save one!</div>
+            {:else}
+              {#each customSongs as s}
+                <div class="custom-song-item">
+                  <button
+                    class="song-button custom"
+                    on:click={() => openCustom(s.name)}
+                    aria-label={`Open custom song ${s.name}`}
+                  >
+                    {s.name}
+                  </button>
+                  <button
+                    class="delete-button"
+                    on:click={() => deleteCustom(s.name)}
+                    aria-label={`Delete custom song ${s.name}`}
+                  >
+                    🗑️
+                  </button>
+                </div>
+              {/each}
+            {/if}
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
 </div>
+
+<style>
+  /* Auth Section */
+  .auth-section {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    padding: 1rem 2rem;
+    margin-bottom: 2rem;
+    border-radius: 0 0 1rem 1rem;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  }
+
+  .auth-info, .auth-form {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    justify-content: center;
+    color: white;
+  }
+
+  .auth-label {
+    font-size: 0.9rem;
+    opacity: 0.9;
+  }
+
+  .auth-email {
+    font-weight: 600;
+    background: rgba(255, 255, 255, 0.2);
+    padding: 0.25rem 0.75rem;
+    border-radius: 1rem;
+  }
+
+  .auth-input {
+    padding: 0.5rem 1rem;
+    border: none;
+    border-radius: 0.5rem;
+    font-size: 0.9rem;
+    min-width: 250px;
+  }
+
+  .auth-button {
+    padding: 0.5rem 1.5rem;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    border-radius: 0.5rem;
+    background: rgba(255, 255, 255, 0.1);
+    color: white;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+
+  .auth-button:hover {
+    background: rgba(255, 255, 255, 0.2);
+    border-color: rgba(255, 255, 255, 0.5);
+  }
+
+  /* Main Container */
+  .main-container {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 0 2rem;
+  }
+
+  /* Header */
+  .app-header {
+    text-align: center;
+    margin-bottom: 3rem;
+    padding: 2rem 0;
+  }
+
+  .app-title {
+    font-size: 3.5rem;
+    font-weight: 800;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 0.5rem;
+  }
+
+  .app-subtitle {
+    font-size: 1.2rem;
+    color: #6b7280;
+    font-weight: 500;
+  }
+
+  /* Control Panel */
+  .control-panel {
+    background: white;
+    border-radius: 1rem;
+    padding: 2rem;
+    margin-bottom: 2rem;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+    border: 1px solid #e5e7eb;
+  }
+
+  .control-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2rem;
+    align-items: start;
+  }
+
+  .control-group {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+  }
+
+  .control-label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    font-weight: 600;
+    color: #374151;
+  }
+
+  .control-select {
+    padding: 0.75rem;
+    border: 2px solid #e5e7eb;
+    border-radius: 0.5rem;
+    font-size: 1rem;
+    background: white;
+    transition: border-color 0.2s ease;
+  }
+
+  .control-select:focus {
+    outline: none;
+    border-color: #667eea;
+  }
+
+  .toggle-group {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .accidental-toggles {
+    display: flex;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+  }
+
+  .toggle-label {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    font-weight: 600;
+    color: #374151;
+    cursor: pointer;
+  }
+
+  .toggle-label.small {
+    font-size: 0.9rem;
+  }
+
+  .toggle-switch {
+    position: relative;
+    width: 3rem;
+    height: 1.5rem;
+    background: #d1d5db;
+    border: none;
+    border-radius: 1rem;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+  }
+
+  .toggle-switch.small {
+    width: 2.5rem;
+    height: 1.25rem;
+  }
+
+  .toggle-switch.active {
+    background: #10b981;
+  }
+
+  .toggle-slider {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: calc(1.5rem - 4px);
+    height: calc(1.5rem - 4px);
+    background: white;
+    border-radius: 50%;
+    transition: transform 0.2s ease;
+  }
+
+  .toggle-switch.small .toggle-slider {
+    width: calc(1.25rem - 4px);
+    height: calc(1.25rem - 4px);
+  }
+
+  .toggle-switch.active .toggle-slider {
+    transform: translateX(1.5rem);
+  }
+
+  .toggle-switch.small.active .toggle-slider {
+    transform: translateX(1.25rem);
+  }
+
+  /* Staff Section */
+  .staff-section {
+    background: white;
+    border-radius: 1rem;
+    padding: 2rem;
+    margin-bottom: 2rem;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+    border: 1px solid #e5e7eb;
+  }
+
+  .staff-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1.5rem;
+  }
+
+  .staff-display {
+    min-height: 200px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #f9fafb;
+    border-radius: 0.5rem;
+    padding: 1rem;
+    border: 2px dashed #d1d5db;
+  }
+
+  .new-staff-button {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 1rem 2rem;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border: none;
+    border-radius: 0.75rem;
+    font-size: 1.1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+  }
+
+  .new-staff-button:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 25px rgba(102, 126, 234, 0.3);
+  }
+
+  .button-icon {
+    font-size: 1.2rem;
+  }
+
+  /* Pitch Display */
+  .pitch-display {
+    background: white;
+    border-radius: 1rem;
+    padding: 2rem;
+    margin-bottom: 2rem;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+    border: 1px solid #e5e7eb;
+  }
+
+  .pitch-info {
+    text-align: center;
+    margin-bottom: 2rem;
+  }
+
+  .frequency-display {
+    margin-bottom: 1rem;
+  }
+
+  .frequency-value {
+    font-size: 4rem;
+    font-weight: 700;
+    font-family: 'Courier New', monospace;
+    color: #667eea;
+  }
+
+  .frequency-unit {
+    font-size: 1.5rem;
+    color: #6b7280;
+    margin-left: 0.5rem;
+  }
+
+  .note-display {
+    font-size: 3rem;
+    font-weight: 700;
+    color: #374151;
+    margin-bottom: 1rem;
+  }
+
+  .state-indicator {
+    font-size: 1rem;
+    color: #6b7280;
+    background: #f3f4f6;
+    padding: 0.5rem 1rem;
+    border-radius: 1rem;
+    display: inline-block;
+  }
+
+  .audio-controls {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1rem;
+  }
+
+  .volume-control {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .control-text {
+    font-size: 0.9rem;
+    color: #6b7280;
+    font-weight: 500;
+  }
+
+  .volume-slider {
+    width: 300px;
+    height: 6px;
+    background: #e5e7eb;
+    border-radius: 3px;
+    outline: none;
+    -webkit-appearance: none;
+  }
+
+  .volume-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 20px;
+    height: 20px;
+    background: #667eea;
+    border-radius: 50%;
+    cursor: pointer;
+  }
+
+  .loudness-display {
+    font-size: 0.9rem;
+    color: #6b7280;
+    background: #f3f4f6;
+    padding: 0.5rem 1rem;
+    border-radius: 0.5rem;
+  }
+
+  /* Metronome Section */
+  .metronome-section {
+    background: white;
+    border-radius: 1rem;
+    padding: 2rem;
+    margin-bottom: 2rem;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+    border: 1px solid #e5e7eb;
+  }
+
+  /* Song Management */
+  .song-management {
+    background: white;
+    border-radius: 1rem;
+    padding: 2rem;
+    margin-bottom: 2rem;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+    border: 1px solid #e5e7eb;
+  }
+
+  .song-panels {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2rem;
+  }
+
+  .song-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .panel-title {
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: #374151;
+    margin-bottom: 0.5rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 2px solid #e5e7eb;
+  }
+
+  .xml-input {
+    width: 100%;
+    padding: 1rem;
+    border: 2px solid #e5e7eb;
+    border-radius: 0.5rem;
+    font-family: 'Courier New', monospace;
+    font-size: 0.9rem;
+    resize: vertical;
+    min-height: 120px;
+  }
+
+  .xml-input:focus {
+    outline: none;
+    border-color: #667eea;
+  }
+
+  .input-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+  }
+
+  .song-name-input {
+    padding: 0.75rem;
+    border: 2px solid #e5e7eb;
+    border-radius: 0.5rem;
+    font-size: 0.9rem;
+  }
+
+  .song-name-input:focus {
+    outline: none;
+    border-color: #667eea;
+  }
+
+  .input-buttons {
+    display: flex;
+    gap: 1rem;
+  }
+
+  .action-button {
+    padding: 0.75rem 1.5rem;
+    border: none;
+    border-radius: 0.5rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    flex: 1;
+  }
+
+  .action-button.render {
+    background: #6b7280;
+    color: white;
+  }
+
+  .action-button.render:hover {
+    background: #4b5563;
+  }
+
+  .action-button.save {
+    background: #3b82f6;
+    color: white;
+  }
+
+  .action-button.save:hover:not(:disabled) {
+    background: #2563eb;
+  }
+
+  .action-button.save:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .song-category {
+    margin-bottom: 1.5rem;
+  }
+
+  .category-title {
+    font-size: 1rem;
+    font-weight: 600;
+    color: #6b7280;
+    margin-bottom: 0.75rem;
+  }
+
+  .song-list {
+    max-height: 200px;
+    overflow-y: auto;
+    border: 1px solid #e5e7eb;
+    border-radius: 0.5rem;
+    padding: 0.5rem;
+  }
+
+  .song-button {
+    width: 100%;
+    padding: 0.75rem 1rem;
+    margin-bottom: 0.5rem;
+    border: none;
+    border-radius: 0.5rem;
+    font-size: 0.9rem;
+    text-align: left;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+
+  .song-button.preset {
+    background: #8b5cf6;
+    color: white;
+  }
+
+  .song-button.preset:hover {
+    background: #7c3aed;
+  }
+
+  .song-button.custom {
+    background: #10b981;
+    color: white;
+  }
+
+  .song-button.custom:hover {
+    background: #059669;
+  }
+
+  .custom-song-item {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .custom-song-item .song-button {
+    margin-bottom: 0;
+    flex: 1;
+  }
+
+  .delete-button {
+    padding: 0.5rem;
+    background: #ef4444;
+    color: white;
+    border: none;
+    border-radius: 0.5rem;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+  }
+
+  .delete-button:hover {
+    background: #dc2626;
+  }
+
+  .no-songs {
+    text-align: center;
+    color: #9ca3af;
+    font-size: 0.9rem;
+    padding: 1rem;
+  }
+
+  /* Responsive Design */
+  @media (max-width: 1024px) {
+    .control-grid {
+      grid-template-columns: 1fr;
+    }
+    
+    .song-panels {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  @media (max-width: 768px) {
+    .main-container {
+      padding: 0 1rem;
+    }
+    
+    .app-title {
+      font-size: 2.5rem;
+    }
+    
+    .control-panel,
+    .staff-section,
+    .pitch-display,
+    .metronome-section,
+    .song-management {
+      padding: 1.5rem;
+    }
+    
+    .frequency-value {
+      font-size: 3rem;
+    }
+    
+    .note-display {
+      font-size: 2.5rem;
+    }
+    
+    .volume-slider {
+      width: 250px;
+    }
+  }
+</style>
