@@ -10,27 +10,14 @@
 
 <script lang="ts">
   // Google Analytics
-  if (typeof window !== 'undefined') {
-    // Load Google Analytics script
-    const script = document.createElement('script');
-    script.async = true;
-    script.src = "https://www.googletagmanager.com/gtag/js?id=G-M8YCNKB6FZ";
-    document.head.appendChild(script);
-    
-    // Initialize Google Analytics
-    (window as any).dataLayer = (window as any).dataLayer || [];
-    (window as any).gtag = function(...args: any[]) {
-      (window as any).dataLayer.push(args);
-    };
-    (window as any).gtag('js', new Date());
-    (window as any).gtag('config', 'G-M8YCNKB6FZ');
-  }
   import { onMount, onDestroy } from 'svelte';
   import { YIN } from 'pitchfinder';
   import { Renderer, RenderContext, Stave, StaveNote, Voice, Formatter, Accidental, KeyManager, Beam } from 'vexflow';
   import { parseMusicXML, type MeasureData } from './analysisToStave';
   import { supabase } from '$lib/supabaseClient';
   import Metronome from './Metronome.svelte';
+
+  
 
   /* --- constants & helpers --- */
   const NOTES = ['C','C♯','D','D♯','E','F','F♯','G','G♯','A','A♯','B'];
