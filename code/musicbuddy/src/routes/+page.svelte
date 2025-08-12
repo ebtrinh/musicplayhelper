@@ -1,17 +1,79 @@
 <script lang="ts">
+  // Google Analytics
+  if (typeof window !== 'undefined') {
+    // Load Google Analytics script
+    const script = document.createElement('script');
+    script.async = true;
+    script.src = "https://www.googletagmanager.com/gtag/js?id=G-2BX4N972Z3";
+    document.head.appendChild(script);
+    
+    // Initialize Google Analytics
+    (window as any).dataLayer = (window as any).dataLayer || [];
+    (window as any).gtag = function(...args: any[]) {
+      (window as any).dataLayer.push(args);
+    };
+    (window as any).gtag('js', new Date());
+    (window as any).gtag('config', 'G-2BX4N972Z3');
+  }
   import { onMount, onDestroy } from 'svelte';
   import { YIN } from 'pitchfinder';
   import { Renderer, RenderContext, Stave, StaveNote, Voice, Formatter, Accidental, KeyManager, Beam } from 'vexflow';
   import { parseMusicXML, type MeasureData } from './analysisToStave';
   import { supabase } from '$lib/supabaseClient';
+  import Metronome from './Metronome.svelte';
 
   /* --- constants & helpers --- */
   const NOTES = ['C','C♯','D','D♯','E','F','F♯','G','G♯','A','A♯','B'];
   const CLEFS = ['bass','alto','treble'] as const;
+  const MIN_FREQ = 40;
+  const MAX_FREQ = 1200;
+  const THRESH   = 0.07;
+  const PROB_MIN = 0.90;
+  const OCT_TOL  = 0.03;
+  const f2n = (f:number)=>`${NOTES[Math.round(12*Math.log2(f/440)+69)%12]}${Math.floor((Math.round(12*Math.log2(f/440)+69))/12)-1}`;
+  const rms2db = (r:number)=>20*Math.log10(r||1e-10);
+
+  let   lastFreq = 0;
   type Clef = typeof CLEFS[number];
   let selectedClef: Clef = 'treble';
   let msreCount = -1;
   let totalMsre = 0;
+
+  let freq = 0, note = '--';
+  let loudness = -Infinity, minDb = -35;
+  let lastHeard = 0;
+  let line: string[] = [];
+  let target: number[] = [];
+  let enableHalves  = true;
+  let enableEighths = true;
+  let useKeyOnly = false;
+  // sub-toggles (you already have these)
+let allowNaturals = true;
+let allowSharps   = true;
+let allowFlats    = true;
+
+// track the in-bar state for each letter+octave
+type AccType = 'nat' | 'sh' | 'fl';
+let barLedger: Record<string, AccType> = {};
+
+
+const accFromKey = (L: string): AccType => {
+  const a = km.selectNote(L).accidental as '#'|'b'|undefined;
+  return a === '#' ? 'sh' : a === 'b' ? 'fl' : 'nat';
+};
+const getLedger = (L: string, o: number): AccType =>
+  barLedger[`${L}${o}`] ?? accFromKey(L);
+const setLedger = (L: string, o: number, t: AccType) => {
+  barLedger[`${L}${o}`] = t;
+};
+
+
+
+  let running = false;
+  let notes: StaveNote[] = [];
+
+  let lastGoodFreq = 0;
+
 
   const CLEF_RANGES: Record<Clef, number[]> = {
     bass:   [2,3],   // C2–B3
@@ -177,30 +239,63 @@
     return 0;
   }
 
-  const MIN_FREQ = 40;
-  const MAX_FREQ = 1200;
-  const THRESH   = 0.07;
-  const PROB_MIN = 0.90;
-  const OCT_TOL  = 0.03;
-  let   lastFreq = 0;
+  // remove any accidental glyphs already attached to notes
+  function stripAccidentalsFromNotes(ns: StaveNote[]) {
+  (ns as any[]).forEach(n => {
+    // remove any accidental-like modifier (covers v3/v4 categories)
+    n.modifiers = (n.modifiers ?? []).filter((m: any) => {
+      const cat = m?.getCategory?.();
+      const ctor = m?.constructor?.name;
+      const looksAcc =
+        cat === 'accidentals' || cat === 'accidental' ||
+        ctor === 'Accidental' ||
+        // some builds expose a "code" or "type" field
+        m?.code === 'accidental' || m?.type === 'n' || m?.type === '#' || m?.type === 'b';
+      return !looksAcc;
+    });
+    // some builds stash a field directly (belt & suspenders)
+    if ('accidental' in (n as any)) (n as any).accidental = undefined;
+  });
+}
 
-  const f2n = (f:number)=>`${NOTES[Math.round(12*Math.log2(f/440)+69)%12]}${Math.floor((Math.round(12*Math.log2(f/440)+69))/12)-1}`;
-  const rms2db = (r:number)=>20*Math.log10(r||1e-10);
 
-  let freq = 0, note = '--';
-  let loudness = -Infinity, minDb = -35;
-  let lastHeard = 0;
-  let line: string[] = [];
-  let target: number[] = [];
-  let enableHalves  = true;
-  let enableEighths = true;
+// add only the sharp/flat that is explicitly in the key string (e.g. "f#/4" or "bb/4")
+function addAccidentalsFromKeys(ns: StaveNote[]) {
+  (ns as any[]).forEach(n => {
+    // remove any existing accidental modifiers first
+    n.modifiers = (n.modifiers ?? []).filter(
+      (m: any) => m?.getCategory?.() !== 'accidentals'
+    );
 
+    const raw  = n.getKeys()[0];          // e.g. "f#/4", "eb/4", "b/4"
+    const root = raw.split('/')[0];       // "f#", "eb", "b"
+
+    // only match ONE accidental char right after the letter
+    const m = root.match(/^[a-g]([#b])$/i);
+    const acc = m ? m[1] : null;          // '#', 'b', or null
+
+    if (acc) n.addModifier(new Accidental(acc), 0);
+  });
+}
+
+
+function hasNaturalGlyph(ns: StaveNote[]): boolean {
+  for (const n of ns as any[]) {
+    for (const m of n.modifiers ?? []) {
+      // VexFlow Accidental has .type === 'n' for naturals
+      if (m?.getCategory?.() === 'accidentals' && (m.type === 'n' || m.accidental === 'n')) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+  
   let ctx:AudioContext, analyser:AnalyserNode;
   const buf = new Float32Array(BUF_SIZE), hist:number[] = [];
-  let running = false;
-  let notes: StaveNote[] = [];
+  
 
-  let lastGoodFreq = 0;
+  
   function isSubHarmonic(cand: number, ref: number): boolean {
     const TOL = 0.04;
     return (
@@ -314,7 +409,20 @@
       .addKeySignature(currentKeySig);
 
     stave.setContext(ctx).draw();
-    Accidental.applyAccidentals([voice], currentKeySig);
+        // BEFORE you format/justify the voice
+if (useKeyOnly) {
+  // identical to your key-only fix: no glyphs at all
+  stripAccidentalsFromNotes(notes);
+} else if (!allowNaturals) {
+  // SAME IDEA as key-only: don't let VexFlow auto anything.
+  // We add only sharps/flats that are explicitly part of the note text.
+  stripAccidentalsFromNotes(notes);
+  addAccidentalsFromKeys(notes);
+} else {
+  // Normal behavior when naturals are allowed
+  Accidental.applyAccidentals([voice], currentKeySig);
+}
+
 
     new Formatter().joinVoices([voice]).formatToStave([voice], stave);
     voice.draw(ctx, stave);
@@ -322,60 +430,205 @@
     Beam.generateBeams(notes).forEach(b => b.setContext(ctx).draw());
   }
 
-  const NOTE_LETTERS = ['c', 'd', 'e', 'f', 'g', 'a', 'b'];
+  const NOTE_LETTERS = ['c','d','e','f','g','a','b'];
+
+  type Alter = 'none' | 'natural' | 'sharp' | 'flat';
+
   function randomNote(): string {
-    const OCTAVES = CLEF_RANGES[selectedClef];
-    const ACC_P = 0.25; // tweak as you like
-    const root  = Math.random() > ACC_P
-      ? NOTE_LETTERS[Math.floor(Math.random() * NOTE_LETTERS.length)]
-      : (() => {
-          const letter = NOTE_LETTERS[Math.floor(Math.random() * NOTE_LETTERS.length)];
-          const acc    = Math.random() < 0.5 ? '#' : 'b';
-          return `${letter}${acc}`;
-        })();
-    const octave  = OCTAVES[Math.floor(Math.random() * OCTAVES.length)];
+  const OCTS = CLEF_RANGES[selectedClef];
+  const octave = OCTS[Math.floor(Math.random()*OCTS.length)];
+  const letter = NOTE_LETTERS[Math.floor(Math.random()*NOTE_LETTERS.length)];
 
-    const sel     = km.selectNote(root);
-    const keyStr  = `${sel.note}/${octave}`;
-
-    const pretty  = sel.accidental
-        ? `${sel.note[0].toUpperCase()}${sel.accidental === '#' ? '♯' : '♭'}${octave}`
-        : `${sel.note.toUpperCase()}${octave}`;
-
-    line.push(pretty);
-    target.push(canon(pretty));
-    return keyStr;
+  if (useKeyOnly) {
+    const sel = km.selectNote(letter); // for pretty/target only
+    const pretty = sel.accidental
+      ? `${sel.note[0].toUpperCase()}${sel.accidental === '#' ? '♯' : '♭'}${octave}`
+      : `${sel.note.toUpperCase()}${octave}`;
+    line.push(pretty); target.push(canon(pretty));
+    return `${letter}/${octave}`; // bare, no glyphs; key sig defines pitch
   }
+
+  // Build allowed alterations
+  const alts: Array<'none'|'sharp'|'flat'|'natural'> = ['none'];
+  if (allowSharps) alts.push('sharp');
+  if (allowFlats)  alts.push('flat');
+  if (allowNaturals) alts.push('natural');
+
+  // pick one
+  const choice = alts[Math.floor(Math.random()*alts.length)];
+
+  // choose root according to choice
+  const root =
+    choice === 'sharp'   ? `${letter}#` :
+    choice === 'flat'    ? `${letter}b` :
+    /* 'none' or 'natural' */            letter;
+
+  // for pretty/target
+  const sel = km.selectNote(root);
+  const pretty = sel.accidental
+    ? `${sel.note[0].toUpperCase()}${sel.accidental === '#' ? '♯' : '♭'}${octave}`
+    : `${sel.note.toUpperCase()}${octave}`;
+  line.push(pretty); target.push(canon(pretty));
+
+  // key string to VexFlow
+  return `${root}/${octave}`;
+}
 
   function generateRandomLine() {
+    // tiny local helpers
+    const pick = <T,>(arr: T[]) => arr[Math.floor(Math.random() * arr.length)];
+    const stripAccidentals = (ns: StaveNote[]) => {
+      (ns as any[]).forEach(n => {
+        n.modifiers = (n.modifiers ?? []).filter((m: any) => m?.getCategory?.() !== 'accidentals');
+      });
+    };
+    const containsNatural = (ns: StaveNote[]) => {
+      for (const n of ns as any[]) {
+        for (const m of n.modifiers ?? []) {
+          const t = m?.type ?? m?.accidental ?? m?.code ?? '';
+          if (t === 'n' || t === 'N' || (typeof t === 'string' && t.toLowerCase().includes('natural'))) return true;
+        }
+      }
+      return false;
+    };
+
     msreCount = -1;
     line = []; target = []; i = 0;
+    gate = 'READY'; // Reset state machine
+    lastNoteTime = 0;
+    matchedFreq = 0;
 
-    currentKeySig = resolveKey();
-    km = new KeyManager(currentKeySig);
+  currentKeySig = resolveKey();
+  km = new KeyManager(currentKeySig);
 
-    notes = [];
+  const OCTS = CLEF_RANGES[selectedClef];
+  const keyAcc: Record<string, '#'|'b'|undefined> =
+    Object.fromEntries(NOTE_LETTERS.map(L => [L, km.selectNote(L).accidental as any]));
+
+  const MAX_OUTER = 40;                 // whole-bar retries
+  for (let attempt = 0; attempt < MAX_OUTER; attempt++) {
+    barLedger = {};
+    notes = []; line = []; target = []; i = 0;
+
     let beatsLeft = MEASURE_BEATS;
-
     while (beatsLeft > 0) {
-      const options = activeDurations(beatsLeft);
+      const options  = activeDurations(beatsLeft);
       const pickFrom = options.length ? options : DURATIONS.filter(d => d.dur === 'q');
-      const choice = pickWeighted(pickFrom);
-
+      const choice   = pickWeighted(pickFrom);
       beatsLeft -= choice.beats;
 
-      const keyStr = randomNote();
-      const note = new StaveNote({
-        keys: [keyStr],
-        duration: choice.dur,
-        clef: selectedClef
-      });
+      // choose a note that respects toggles and won’t need a ♮ given the ledger
+      let keyStr = '';
+      let L: string = 'c';
+      let o = OCTS[0];
+      let resulting: AccType = 'nat';
 
-      notes.push(note);
+      const MAX_INNER = 50;
+      for (let tries = 0; tries < MAX_INNER; tries++) {
+        L = pick(NOTE_LETTERS);
+        o = pick(OCTS);
+
+        if (useKeyOnly) {
+          const spelled = km.selectNote(L);
+          const pretty  = spelled.accidental
+            ? `${spelled.note[0].toUpperCase()}${spelled.accidental === '#' ? '♯' : '♭'}${o}`
+            : `${spelled.note.toUpperCase()}${o}`;
+          line.push(pretty);
+          target.push(canon(pretty));
+          keyStr    = `${L}/${o}`;            // bare, no glyphs
+          resulting = accFromKey(L);
+          break;
+        }
+
+        // build allowed alteration set
+        type Alter = 'none'|'natural'|'sharp'|'flat';
+        const allowed: Alter[] = ['none'];
+        if (allowNaturals) allowed.push('natural');
+        if (allowSharps)   allowed.push('sharp');
+        if (allowFlats)    allowed.push('flat');
+
+        const weights: Record<Alter, number> = { none:4, natural:2, sharp:2, flat:2 };
+        const pool = allowed.flatMap(t => Array(weights[t]).fill(t));
+        const alter = pool[Math.floor(Math.random()*pool.length)] as Alter;
+
+        // letters that actually yield the requested glyph
+        let letters = NOTE_LETTERS;
+        if (alter === 'natural') {
+          letters = NOTE_LETTERS.filter(x => keyAcc[x] === '#' || keyAcc[x] === 'b');
+          if (!letters.length) continue; // e.g. C major
+          L = pick(letters);
+        } else if (alter === 'sharp') {
+          letters = NOTE_LETTERS.filter(x => keyAcc[x] !== '#');
+          L = pick(letters);
+        } else if (alter === 'flat') {
+          letters = NOTE_LETTERS.filter(x => keyAcc[x] !== 'b');
+          L = pick(letters);
+        }
+
+        // what accidental TYPE will this pitch be?
+        const desired: AccType =
+          alter === 'natural' ? 'nat' :
+          alter === 'sharp'   ? 'sh'  :
+          alter === 'flat'    ? 'fl'  :
+          accFromKey(L);
+
+        // if naturals are OFF, avoid transitions in-bar to NAT on same letter+octave
+        const prev = getLedger(L, o);
+        if (!allowNaturals && desired === 'nat' && prev !== 'nat') {
+          // try another octave (accidentals don't carry across octaves). If none, retry.
+          const altO = OCTS.filter(x => x !== o).find(x => getLedger(L, x) === 'nat');
+          if (altO) { o = altO; } else { continue; }
+        }
+
+        // build keyStr for VexFlow (diatonic → bare letter)
+        if (alter === 'none') {
+          keyStr = `${L}/${o}`;               // no glyph
+        } else if (alter === 'natural') {
+          keyStr = `${L}/${o}`;               // will draw ♮ (only if allowed)
+        } else if (alter === 'sharp') {
+          keyStr = `${L}#/${o}`;
+        } else { // flat
+          keyStr = `${L}b/${o}`;
+        }
+
+        // pretty text & target use the sounding pitch
+        const spellRoot = alter === 'sharp' ? `${L}#`
+                         : alter === 'flat' ? `${L}b`
+                         : L;
+        const s2 = km.selectNote(spellRoot);
+        const pretty = s2.accidental
+          ? `${s2.note[0].toUpperCase()}${s2.accidental === '#' ? '♯' : '♭'}${o}`
+          : `${s2.note.toUpperCase()}${o}`;
+        line.push(pretty);
+        target.push(canon(pretty));
+
+        resulting = desired;
+        break;
+      }
+
+      // record the in-bar state and add the note
+      setLedger(L, o, resulting);
+      notes.push(new StaveNote({ keys:[keyStr], duration: choice.dur, clef: selectedClef }));
     }
 
-    renderStaff(MEASURE_BEATS);
+    // final guard: simulate accidentals; if naturals appear while disallowed → rebuild
+    if (!useKeyOnly && !allowNaturals) {
+      const v = new Voice({ numBeats: MEASURE_BEATS, beatValue: 4 }).addTickables(notes);
+      Accidental.applyAccidentals([v], currentKeySig);
+      const bad = containsNatural(notes);
+      stripAccidentals(notes);
+      if (bad) continue; // try a new bar
+    }
+
+    break; // accept this bar
   }
+
+  renderStaff(MEASURE_BEATS);   
+  console.log('📝 Generated random notes:', { line, target, notesCount: notes.length });
+}
+
+
+
 
   function pickWeighted<T extends { w: number }>(arr: T[]): T {
     const total = arr.reduce((s, a) => s + a.w, 0);
@@ -401,11 +654,20 @@
   function isRealNote(n: string): boolean {
     return /^[A-G][#♯b♭]?\d$/.test(n);
   }
-  function isClearlyDifferent(a: number, b: number) { return Math.abs(a - b) / b > 0.10; }
+  function isClearlyDifferent(a: number, b: number) { return Math.abs(a - b) / b > 0.05; }
 
   let matchedFreq = 0;
   let gate: 'READY' | 'WAIT_NEXT' | 'WAIT_ATTACK' = 'READY';
   let i = 0;
+  let lastNoteTime = 0;           // Track when we last matched a note
+  const NOTE_TIMEOUT = 2000;      // Force transition after 2 seconds
+
+  let octRejectStreak = 0;          // how many consecutive subharmonic rejections
+const OCT_STREAK_LIMIT = 6;       // accept after ~6 frames (~100–200 ms)
+let lastUpdate = 0;               // ms when we last accepted a pitch
+const STALE_MS = 1200;            // force accept if display hasn't moved for this long
+
+
 
   function tick(): void {
     if (!running) return;
@@ -417,15 +679,27 @@
       hist.push(p);
       if (hist.length > HIST) hist.shift();
       const mid = [...hist].sort((a,b)=>a-b)[Math.floor(hist.length/2)];
-      if (!(lastGoodFreq && isSubHarmonic(mid, lastGoodFreq))) {
+
+      const isSub = lastGoodFreq && isSubHarmonic(mid, lastGoodFreq);
+      const stale = Date.now() - lastUpdate > STALE_MS;
+
+      // If it's a subharmonic, allow a few frames of rejection, then accept.
+      if (isSub && !stale && octRejectStreak < OCT_STREAK_LIMIT) {
+        octRejectStreak++;
+        // don't update display, also don't bump lastHeard (so HOLD_MS can still clear)
+      } else {
+        // accept immediately (either not subharmonic, or we've seen it enough, or UI is stale)
+        octRejectStreak = 0;
         freq = Math.round(mid);
         note = f2n(mid);
         lastGoodFreq = mid;
         lastHeard = Date.now();
+        lastUpdate = lastHeard;
       }
     } else if (Date.now() - lastHeard > HOLD_MS) {
       freq = 0;
       note = '--';
+      octRejectStreak = 0;           // reset the streak on silence
     }
 
     switch (gate) {
@@ -433,14 +707,15 @@
         if (isRealNote(note) && canon(note) === target[i]) {
           markNoteGreen(notes[i]);
           matchedFreq = freq;
+          lastNoteTime = Date.now();
           i++;
-          renderStaff(notes.length);
+          renderStaff(MEASURE_BEATS);
           if (i === notes.length){
             if (msreCount == -1){
               generateRandomLine();
             } else {
               if (msreCount == totalMsre-1){
-                console.log("done")
+                // Song complete
               } else {
                 msreCount++;
                 renderAnalysisLine();
@@ -448,14 +723,29 @@
             }
           }
           gate = 'WAIT_NEXT';
+        } else if (isRealNote(note)) {
+          // Note detected but no match
         }
         break;
       case 'WAIT_NEXT':
-        if (loudness < minDb) gate = 'WAIT_ATTACK';
-        else if (freq && matchedFreq && isClearlyDifferent(freq, matchedFreq)) gate = 'READY';
+        // Check for timeout - force transition if we've been waiting too long
+        if (Date.now() - lastNoteTime > NOTE_TIMEOUT) {
+          gate = 'READY';
+          break;
+        }
+        
+        if (loudness < minDb) {
+          gate = 'WAIT_ATTACK';
+        } else if (freq && matchedFreq && isClearlyDifferent(freq, matchedFreq)) {
+          gate = 'READY';
+        } else if (freq && isRealNote(note) && canon(note) !== target[i]) {
+          gate = 'READY';
+        }
         break;
       case 'WAIT_ATTACK':
-        if (loudness >= minDb) gate = 'READY';
+        if (loudness >= minDb) {
+          gate = 'READY';
+        }
         break;
     }
     raf = requestAnimationFrame(tick);
@@ -463,16 +753,7 @@
 
   /* ─── analysis / XML rendering ───────────────────── */
   let userInput = '';
-  let analysisTxt = `
-Composer: Traditional
-Title: Hot Cross Buns – melody line
-Analyst: ChatGPT demo
-
-Time Signature: 4/4
-
-m1 C: C4 D4 E4
-m2 C: E4 D4 C4
-`;
+  let analysisTxt = ``;
   let xmlText:string = '';
   let measures: any;
 
@@ -505,13 +786,17 @@ m2 C: E4 D4 C4
     km          = new KeyManager(currentKeySig);
 
     line = []; target = []; i = 0;
+    gate = 'READY'; // Reset state machine
+    lastNoteTime = 0;
+    matchedFreq = 0;
+    
     for (let x = 0; x < notes.length; x++) {
       const k = notes[x].keys[0];
       line.push(k.replace('/', ''));
       target.push(canon(k.replace('/', '')));
     }
 
-    const beats = notes.length;
+    const beats = measures[msreCount].timeSignature.beats;
     const voice = new Voice({ numBeats: beats, beatValue: 4 }).addTickables(notes);
 
     const fmt = new Formatter();
@@ -528,6 +813,12 @@ m2 C: E4 D4 C4
     const heuristic = calcStaveWidth(notes, accCnt);
     const width    = Math.ceil(Math.max(heuristic, minNotesWidth + leadIn + 20));
 
+    let octRejectStreak = 0;          // how many consecutive subharmonic rejections
+const OCT_STREAK_LIMIT = 6;       // accept after ~6 frames (~100–200 ms)
+let lastUpdate = 0;               // ms when we last accepted a pitch
+const STALE_MS = 1200;            // force accept if display hasn't moved for this long
+
+
     renderer.resize(width, 140);
     const stave = new Stave(10, 20, width)
       .addClef(selectedClef)
@@ -535,7 +826,20 @@ m2 C: E4 D4 C4
       .addKeySignature(currentKeySig);
 
     stave.setContext(ctx).draw();
-    Accidental.applyAccidentals([voice], currentKeySig);
+        // BEFORE you format/justify the voice
+if (useKeyOnly) {
+  // identical to your key-only fix: no glyphs at all
+  stripAccidentalsFromNotes(notes);
+} else if (!allowNaturals) {
+  // SAME IDEA as key-only: don't let VexFlow auto anything.
+  // We add only sharps/flats that are explicitly part of the note text.
+  stripAccidentalsFromNotes(notes);
+  addAccidentalsFromKeys(notes);
+} else {
+  // Normal behavior when naturals are allowed
+  Accidental.applyAccidentals([voice], currentKeySig);
+}
+
 
     new Formatter().joinVoices([voice]).formatToStave([voice], stave);
     voice.draw(ctx, stave);
@@ -556,52 +860,10 @@ m2 C: E4 D4 C4
   let vfDiv: HTMLDivElement;
 
   /* ---------- Metronome ---------- */
-  let bpm = 120;
-  let metroOn = false;
-  let tickInterval: number | null = null;
+  // Remove metronome logic and state:
+  // Remove lines 559-605 (all metronome state and functions)
+  // ... existing code ...
 
-  let beatsPerBar = 4;
-  let metroIdx = 0;
-
-  function playClick(accent = false) {
-    if (!ctx) return;
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.frequency.value = accent ? 1600 : 1000;
-    gain.gain.value     = accent ? 0.35  : 0.20;
-    osc.connect(gain).connect(ctx.destination);
-    osc.start();
-    osc.stop(ctx.currentTime + 0.05);
-  }
-  function metronomeTick() {
-    playClick(metroIdx === 0);
-    metroIdx = (metroIdx + 1) % beatsPerBar;
-  }
-  function startMetronome() {
-    stopMetronome();
-    metroIdx = 0;
-    metronomeTick();
-    tickInterval = window.setInterval(metronomeTick, 60000 / bpm);
-    metroOn = true;
-  }
-  function stopMetronome() {
-    if (tickInterval !== null) clearInterval(tickInterval);
-    tickInterval = null;
-    metroOn = false;
-  }
-  function toggleMetronome() {
-    metroOn ? stopMetronome() : startMetronome();
-  }
-  $: if (metroOn) {
-    stopMetronome();
-    startMetronome();
-  }
-  onDestroy(() => { stopMetronome(); });
-
-  function tsChanged() {
-    const opt = TS_OPTIONS.find(o => o.label === selectedTS);
-    if (opt) { beatsPerBar = opt.beats; metroIdx = 0; }
-  }
 
   /* ---------- Preset songs ---------- */
   const songs = [
@@ -654,15 +916,15 @@ m2 C: E4 D4 C4
       bind:value={emailInput}
       placeholder="you@example.com"
       aria-label="Email address"
-    />
+    /> <!-- email input -->
     <button on:click={signInWithEmail} class="rounded px-3 py-2 border" aria-label="Send magic link">
       Sign in (Email)
-    </button>
+    </button> <!-- sign in (email) -->
   {/if}
-</div>
+</div> <!-- auth ui -->
 
 <div class="flex flex-col items-center justify-center h-screen gap-6 text-center">
-  <h1 class="text-3xl font-bold">Ethan's Music Buddy</h1>
+  <h1 class="text-3xl font-bold">Music buddy</h1>
 
   <!-- Clef picker -->
   <label class="flex items-center gap-2">
@@ -707,7 +969,7 @@ m2 C: E4 D4 C4
           class:translate-x-5={enableHalves}
           class:translate-x-0={!enableHalves}
         ></span>
-      </button>
+      </button> <!-- half notes toggle -->
     </label>
 
     <!-- Eighth notes toggle -->
@@ -727,8 +989,86 @@ m2 C: E4 D4 C4
           class:translate-x-5={enableEighths}
           class:translate-x-0={!enableEighths}
         ></span>
+      </button> <!-- eighth notes toggle -->
+    </label>
+
+    <!-- Key-only notes toggle -->
+    <label class="flex items-center gap-2 text-sm cursor-pointer">
+      <span>Key-only notes</span>
+      <button
+        type="button"
+        aria-label="Toggle key-only notes on or off"
+        class="relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition duration-200 ease-in-out"
+        class:bg-green-500={useKeyOnly}
+        class:bg-gray-300={!useKeyOnly}
+        on:click={() => { useKeyOnly = !useKeyOnly; generateRandomLine(); }}
+        aria-pressed={useKeyOnly}
+      >
+        <span
+          class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out"
+          class:translate-x-5={useKeyOnly}
+          class:translate-x-0={!useKeyOnly}
+        ></span>
+      </button>
+      {#if !useKeyOnly}
+  <div class="flex items-center gap-6">
+    <!-- Naturals -->
+    <label class="flex items-center gap-2 text-sm cursor-pointer">
+      <span>Naturals</span>
+      <button
+        type="button"
+        aria-label="Toggle natural accidentals"
+        class="relative inline-flex h-6 w-11 rounded-full border-2 transition"
+        class:bg-green-500={allowNaturals}
+        class:bg-gray-300={!allowNaturals}
+        on:click={() => { allowNaturals = !allowNaturals; generateRandomLine(); }}
+        aria-pressed={allowNaturals}
+      >
+        <span class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition"
+              class:translate-x-5={allowNaturals}
+              class:translate-x-0={!allowNaturals}></span>
       </button>
     </label>
+
+    <!-- Sharps -->
+    <label class="flex items-center gap-2 text-sm cursor-pointer">
+      <span>Sharps</span>
+      <button
+        type="button"
+        aria-label="Toggle sharp accidentals"
+        class="relative inline-flex h-6 w-11 rounded-full border-2 transition"
+        class:bg-green-500={allowSharps}
+        class:bg-gray-300={!allowSharps}
+        on:click={() => { allowSharps = !allowSharps; generateRandomLine(); }}
+        aria-pressed={allowSharps}
+      >
+        <span class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition"
+              class:translate-x-5={allowSharps}
+              class:translate-x-0={!allowSharps}></span>
+      </button>
+    </label>
+
+    <!-- Flats -->
+    <label class="flex items-center gap-2 text-sm cursor-pointer">
+      <span>Flats</span>
+      <button
+        type="button"
+        aria-label="Toggle flat accidentals"
+        class="relative inline-flex h-6 w-11 rounded-full border-2 transition"
+        class:bg-green-500={allowFlats}
+        class:bg-gray-300={!allowFlats}
+        on:click={() => { allowFlats = !allowFlats; generateRandomLine(); }}
+        aria-pressed={allowFlats}
+      >
+        <span class="pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition"
+              class:translate-x-5={allowFlats}
+              class:translate-x-0={!allowFlats}></span>
+      </button>
+    </label>
+  </div>
+{/if}
+    </label>
+
   </div>
 
   <!-- Staff + controls -->
@@ -740,6 +1080,7 @@ m2 C: E4 D4 C4
   <div class="flex flex-col items-center gap-1">
     <div class="text-6xl font-mono">{freq || '--'} Hz</div>
     <div class="text-5xl">{note}</div>
+    <div class="text-sm opacity-60">State: {gate}</div>
   </div>
 
   <label class="flex flex-col items-center gap-1">
@@ -749,7 +1090,7 @@ m2 C: E4 D4 C4
 
   <div class="text-xs opacity-70">current loudness: {loudness.toFixed(1)} dBFS</div>
   <footer class="text-xs opacity-60">buncha updates soon for variety soon</footer>
-
+  <Metronome {ctx} />
   <!-- Lower panel -->
   <div class="w-full mt-8 border-t bg-gray-50 p-4 flex gap-4">
     <!-- ◀ Left: free-form input + render + save -->
@@ -759,7 +1100,7 @@ m2 C: E4 D4 C4
         rows="6"
         class="flex-1 w-full rounded border p-2 text-xs resize-none"
         placeholder="Paste MusicXML here…"
-      ></textarea>
+      ></textarea> <!-- custom input -->
 
       <div class="mt-2 flex items-center gap-2 justify-end">
         <input
@@ -767,13 +1108,13 @@ m2 C: E4 D4 C4
           placeholder="name (letters/numbers/-/_)"
           bind:value={customName}
           aria-label="Custom song name"
-        />
-        <button
+        /> <!-- custom name -->
+         <button
           on:click={() => setSong('', false)}
           class="rounded bg-slate-500 px-3 py-1 text-white"
         >
           Render Input
-        </button>
+        </button> <!-- render input -->
         <button
           on:click={saveCustom}
           class="rounded bg-blue-600 px-3 py-1 text-white disabled:opacity-50"
@@ -782,10 +1123,10 @@ m2 C: E4 D4 C4
           aria-label="Save custom song"
         >
           {userEmail ? 'Save to My Account' : 'Sign in to Save'}
-        </button>
+        </button> <!-- save custom -->
       </div>
     </div>
-
+    
     <!-- ▶ Right: presets + custom list (scrollable) -->
     <div class="flex-1 flex flex-col gap-4">
       <!-- Presets -->
@@ -834,6 +1175,7 @@ m2 C: E4 D4 C4
           {/if}
         </div>
       </div>
-    </div>
+    </div> <!-- custom songs -->
   </div>
+  
 </div>

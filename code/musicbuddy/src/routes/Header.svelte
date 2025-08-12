@@ -1,13 +1,12 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import logo from '$lib/images/svelte-logo.svg';
 	import github from '$lib/images/github.svg';
 </script>
 
 <header>
 	<div class="corner">
-		<a href="https://svelte.dev/docs/kit">
-			<img src={logo} alt="SvelteKit" />
+		<a href="/dashboard" title="EBT Labs Dashboard">
+			<span class="logo-text">EBT</span>
 		</a>
 	</div>
 
@@ -58,6 +57,17 @@
 		width: 2em;
 		height: 2em;
 		object-fit: contain;
+	}
+
+	.logo-text {
+		font-size: 1.2rem;
+		font-weight: bold;
+		color: var(--color-theme-1);
+		text-decoration: none;
+	}
+
+	.logo-text:hover {
+		color: var(--color-theme-2);
 	}
 
 	nav {
