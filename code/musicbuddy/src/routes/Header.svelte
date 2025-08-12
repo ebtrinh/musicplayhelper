@@ -4,11 +4,7 @@
 </script>
 
 <header>
-	<div class="corner">
-		<a href="/dashboard" title="EBT Labs Dashboard">
-			<span class="logo-text">EBT</span>
-		</a>
-	</div>
+
 
 	<nav>
 		<svg viewBox="0 0 2 3" aria-hidden="true">
