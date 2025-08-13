@@ -436,6 +436,15 @@ function hasNaturalGlyph(ns: StaveNote[]): boolean {
     const width = Math.ceil(Math.max(heuristic, minNotesWidth + leadIn + 20));
 
     renderer.resize(width, 140);
+    // Make SVG responsive: set viewBox and fluid size
+    const svgRoot = vfDiv.querySelector('svg');
+    if (svgRoot) {
+      svgRoot.setAttribute('viewBox', `0 0 ${width} 140`);
+      svgRoot.setAttribute('preserveAspectRatio', 'xMinYMin meet');
+      (svgRoot as SVGSVGElement).style.width = '100%';
+      (svgRoot as SVGSVGElement).style.height = 'auto';
+      (svgRoot as SVGSVGElement).style.display = 'block';
+    }
     const stave = new Stave(10, 20, width)
       .addClef(selectedClef)
       .addTimeSignature(`${beats}/4`)
@@ -550,7 +559,7 @@ if (useKeyOnly) {
       const choice   = pickWeighted(pickFrom);
       beatsLeft -= choice.beats;
 
-      // choose a note that respects toggles and won’t need a ♮ given the ledger
+      // choose a note that respects toggles and won't need a ♮ given the ledger
       let keyStr = '';
       let L: string = 'c';
       let o = OCTS[0];
@@ -854,6 +863,15 @@ const heuristic = calcStaveWidth(notes, accCnt);
 const width     = Math.ceil(Math.max(heuristic, minNotesWidth + leadIn + 20));
 
 renderer.resize(width, 140);
+// Make SVG responsive: set viewBox and fluid size
+const svgRoot2 = vfDiv.querySelector('svg');
+if (svgRoot2) {
+  svgRoot2.setAttribute('viewBox', `0 0 ${width} 140`);
+  svgRoot2.setAttribute('preserveAspectRatio', 'xMinYMin meet');
+  (svgRoot2 as SVGSVGElement).style.width = '100%';
+  (svgRoot2 as SVGSVGElement).style.height = 'auto';
+  (svgRoot2 as SVGSVGElement).style.display = 'block';
+}
 const stave = new Stave(10, 20, width)
   .addClef(selectedClef)
   .addTimeSignature(`${beats}/${beatValue}`)
@@ -915,7 +933,7 @@ Beam.generateBeams(notes).forEach(b => b.setContext(ctx).draw());
     "Amazing Grace",
     "Oh! Susanna",
     "Aura Lee",
-    "She’ll Be Comin’ Round the Mountain",
+    "She'll Be Comin' Round the Mountain",
     "Home on the Range",
     "Auld Lang Syne",
     "Danny Boy",
@@ -1371,6 +1389,7 @@ $: if (prefsLoaded) {
     gap: 1rem;
     justify-content: center;
     color: white;
+    flex-wrap: wrap;
   }
 
   .auth-label {
@@ -1390,7 +1409,8 @@ $: if (prefsLoaded) {
     border: 2px solid rgba(255, 255, 255, 0.35);
     border-radius: 0.5rem;
     font-size: 0.9rem;
-    min-width: 250px;
+    min-width: 0;
+    width: min(420px, 100%);
     background: rgba(255, 255, 255, 0.12);
     color: #fff;
     transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
@@ -1491,6 +1511,7 @@ $: if (prefsLoaded) {
     font-size: 1rem;
     background: white;
     transition: border-color 0.2s ease;
+    width: 100%;
   }
 
   .control-select:focus {
@@ -1575,6 +1596,7 @@ $: if (prefsLoaded) {
     margin-bottom: 2rem;
     box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
     border: 1px solid #e5e7eb;
+    overflow-x: auto;
   }
 
   .staff-container {
@@ -1593,6 +1615,8 @@ $: if (prefsLoaded) {
     border-radius: 0.5rem;
     padding: 1rem;
     border: 2px dashed #d1d5db;
+    width: 100%;
+    overflow: hidden;
   }
 
   .new-staff-button {
@@ -1708,7 +1732,7 @@ $: if (prefsLoaded) {
   }
 
   .volume-slider {
-    width: 300px;
+    width: min(100%, 300px);
     height: 6px;
     background: #e5e7eb;
     border-radius: 3px;
@@ -1966,5 +1990,25 @@ $: if (prefsLoaded) {
     .volume-slider {
       width: 250px;
     }
+  }
+
+  /* Ultra-narrow phones */
+  @media (max-width: 420px) {
+    .main-container { padding: 0 0.5rem; }
+    .app-title { font-size: clamp(1.8rem, 9vw, 2.3rem); }
+    .app-subtitle { font-size: 0.95rem; }
+    .control-panel,
+    .staff-section,
+    .pitch-display,
+    .metronome-section,
+    .song-management { padding: 1rem; }
+    .toggle-group { gap: 0.75rem; }
+    .auth-form { flex-direction: column; align-items: stretch; }
+    .auth-button { width: 100%; }
+    .volume-slider { width: 100%; }
+  }
+  @media (max-width: 340px) {
+    .app-title { font-size: clamp(1.6rem, 10vw, 2rem); }
+    .panel-title { font-size: 1.1rem; }
   }
 </style>

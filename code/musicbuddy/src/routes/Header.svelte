@@ -189,13 +189,13 @@
 
 	/* Responsive: mobile menu */
 	@media (max-width: 768px) {
-		header { padding: 0.75rem 1rem; border-radius: 0 0 0.75rem 0.75rem; }
+		header { padding: 0.75rem 0.75rem; border-radius: 0 0 0.75rem 0.75rem; }
 		.menu-toggle { display: inline-flex; }
 		nav {
 			position: absolute;
 			top: calc(100% + 8px);
-			left: 12px;
-			right: 12px;
+			left: 8px;
+			right: 8px;
 			display: none;
 			z-index: 30;
 		}
@@ -203,5 +203,10 @@
 		ul { flex-direction: column; align-items: stretch; }
 		nav a { margin: 0.15rem; }
 		.corner.right { display: none; }
+	}
+	@media (max-width: 380px) {
+		.logo-text { font-size: 0.95rem; }
+		.ebt-button { padding: 0.5rem 0.9rem; }
+		.menu-toggle .bars { font-size: 1rem; }
 	}
 </style>
