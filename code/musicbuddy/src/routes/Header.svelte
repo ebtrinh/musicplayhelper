@@ -1,16 +1,21 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import github from '$lib/images/github.svg';
+	let menuOpen = false;
 </script>
 
 <header>
-	<div class="corner">
+	<div class="corner left">
 		<a href="https://ebtlabs.site" title="EBT Labs" class="ebt-button">
 			<span class="logo-text">EBT</span>
 		</a>
 	</div>
 
-	<nav>
+	<button class="menu-toggle" aria-label="Toggle navigation" on:click={() => (menuOpen = !menuOpen)}>
+		<span class="bars">☰</span>
+	</button>
+
+	<nav class:open={menuOpen}>
 		<ul>
 			<li aria-current={page.url.pathname === '/' ? 'page' : undefined}>
 				<a href="/">Music Buddy</a>
@@ -21,7 +26,7 @@
 		</ul>
 	</nav>
 
-	<div class="corner">
+	<div class="corner right">
 		<a href="https://github.com/ebtrinh/musicplayhelper">
 			<img src={github} alt="GitHub" />
 		</a>
@@ -40,12 +45,16 @@
 		box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
 		margin-bottom: 2rem;
 		border: 1px solid rgba(229, 231, 235, 0.4);
+		position: relative;
+		z-index: 20;
 	}
 
 	.corner {
 		width: auto;
 		height: auto;
 	}
+	.corner.left { margin-right: 0.5rem; }
+	.corner.right { margin-left: 0.5rem; }
 
 	.corner a {
 		display: flex;
@@ -61,10 +70,10 @@
 	}
 
 	.ebt-button {
-		padding: 0.75rem 1.5rem;
+		padding: 0.6rem 1.1rem;
 		background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
 		color: white;
-		border-radius: 0.75rem;
+		border-radius: 0.65rem;
 		font-weight: 600;
 		transition: transform 0.2s ease, box-shadow 0.2s ease;
 	}
@@ -75,11 +84,24 @@
 	}
 
 	.logo-text {
-		font-size: 1.1rem;
+		font-size: 1.05rem;
 		font-weight: bold;
 		color: white;
 		text-decoration: none;
 	}
+
+	.menu-toggle {
+		display: none;
+		align-items: center;
+		justify-content: center;
+		padding: 0.5rem 0.75rem;
+		border-radius: 0.5rem;
+		border: 1px solid rgba(229, 231, 235, 0.6);
+		background: rgba(255, 255, 255, 0.6);
+		box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+		cursor: pointer;
+	}
+	.menu-toggle .bars { font-size: 1.1rem; }
 
 	nav {
 		display: flex;
@@ -158,5 +180,25 @@
 		background: linear-gradient(135deg, #5a67d8 0%, #6b46c1 100%);
 		transform: translateY(-1px);
 		box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+	}
+
+	/* Responsive: mobile menu */
+	@media (max-width: 768px) {
+		header {
+			padding: 0.75rem 1rem;
+		}
+		.menu-toggle { display: inline-flex; }
+		nav {
+			position: absolute;
+			top: calc(100% + 8px);
+			left: 12px;
+			right: 12px;
+			display: none;
+			z-index: 30;
+		}
+		nav.open { display: flex; }
+		ul { flex-direction: column; align-items: stretch; }
+		nav a { margin: 0.15rem; }
+		.corner.right { display: none; }
 	}
 </style>

@@ -35,6 +35,9 @@
   let selectedClef: Clef = 'treble';
   let msreCount = -1;
   let totalMsre = 0;
+  
+  /* ---------- DOM refs ---------- */
+  let vfDiv: HTMLDivElement | undefined;
 
   let freq = 0, note = '--';
   let loudness = -Infinity, minDb = -35;
@@ -44,10 +47,13 @@
   let enableHalves  = true;
   let enableEighths = true;
   let useKeyOnly = false;
+  let bpm = 120;
   // sub-toggles (you already have these)
 let allowNaturals = true;
 let allowSharps   = true;
 let allowFlats    = true;
+
+
 
 // track the in-bar state for each letter+octave
 type AccType = 'nat' | 'sh' | 'fl';
@@ -64,6 +70,28 @@ const setLedger = (L: string, o: number, t: AccType) => {
   barLedger[`${L}${o}`] = t;
 };
 
+function beatsFromNotes(ns: StaveNote[]) {
+  // VexFlow durations can be 'q','h','8','qr','8r', etc. Strip the 'r' if present.
+  const toBeat = (dur: string) => {
+    const d = dur.replace('r','');   // rest or not, both count the same for timing
+    if (d === 'w') return 4;
+    if (d === 'h') return 2;
+    if (d === 'q') return 1;
+    if (d === '8') return 0.5;
+    if (d === '16') return 0.25;
+    if (d === '32') return 0.125;
+    // fallback: treat unknown as a quarter
+    return 1;
+  };
+  return ns.reduce((sum, n) => sum + toBeat(n.getDuration()), 0);
+}
+
+// choose an integer TS top number to draw (you can refine later)
+function normalizeBeats(b: number) {
+  // Snap near-integers. If you ever do compound meters, you can draw 6/8 etc.
+  const snapped = Math.round(b * 2) / 2;
+  return Math.max(1, Math.round(snapped));
+}
 
 
   let running = false;
@@ -771,6 +799,7 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
   }
 
   async function renderAnalysisLine() {
+    if (!vfDiv) return;
     if (msreCount == -1 || measures == undefined) {
       msreCount = 0;
       await getMusicXML();
@@ -793,55 +822,51 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
       target.push(canon(k.replace('/', '')));
     }
 
-    const beats = measures[msreCount].timeSignature.beats;
-    const voice = new Voice({ numBeats: beats, beatValue: 4 }).addTickables(notes);
+    // --- ADAPT THE VOICE & STAVE TO TRUE DURATION ---
+const beatsFloat = beatsFromNotes(notes);   // sum from the durations you parsed
+const beats      = normalizeBeats(beatsFloat);
+const beatValue  = 4;                       // draw as /4 (you can switch to XML time if you like)
 
-    const fmt = new Formatter();
-    fmt.joinVoices([voice]).format([voice], 0);
-    const minNotesWidth = fmt.getMinTotalWidth();
+// Build the voice to match what will actually be drawn
+const voice = new Voice({ numBeats: beats, beatValue }).addTickables(notes);
 
-    vfDiv.innerHTML = '';
-    const renderer = new Renderer(vfDiv, Renderer.Backends.SVG);
-    renderer.resize(10, 140);
-    const ctx = renderer.getContext();
+// --- compute safe width (no cutoffs / no huge gaps) ---
+const fmt = new Formatter();
+fmt.joinVoices([voice]).format([voice], 0);
+const minNotesWidth = fmt.getMinTotalWidth();
 
-    const leadIn   = measureLead(ctx, beats);
-    const accCnt   = accidentalCount(currentKeySig);
-    const heuristic = calcStaveWidth(notes, accCnt);
-    const width    = Math.ceil(Math.max(heuristic, minNotesWidth + leadIn + 20));
+vfDiv.innerHTML = '';
+const renderer = new Renderer(vfDiv, Renderer.Backends.SVG);
+renderer.resize(10, 140);
+const ctx = renderer.getContext();
 
-    let octRejectStreak = 0;          // how many consecutive subharmonic rejections
-const OCT_STREAK_LIMIT = 6;       // accept after ~6 frames (~100–200 ms)
-let lastUpdate = 0;               // ms when we last accepted a pitch
-const STALE_MS = 1200;            // force accept if display hasn't moved for this long
+const leadIn    = measureLead(ctx, beats);
+const accCnt    = accidentalCount(currentKeySig);
+const heuristic = calcStaveWidth(notes, accCnt);
+const width     = Math.ceil(Math.max(heuristic, minNotesWidth + leadIn + 20));
 
+renderer.resize(width, 140);
+const stave = new Stave(10, 20, width)
+  .addClef(selectedClef)
+  .addTimeSignature(`${beats}/${beatValue}`)
+  .addKeySignature(currentKeySig);
 
-    renderer.resize(width, 140);
-    const stave = new Stave(10, 20, width)
-      .addClef(selectedClef)
-      .addTimeSignature(`${beats}/4`)
-      .addKeySignature(currentKeySig);
+stave.setContext(ctx).draw();
 
-    stave.setContext(ctx).draw();
-        // BEFORE you format/justify the voice
+// 🔽 keep your accidental policy exactly as you implemented
 if (useKeyOnly) {
-  // identical to your key-only fix: no glyphs at all
   stripAccidentalsFromNotes(notes);
 } else if (!allowNaturals) {
-  // SAME IDEA as key-only: don't let VexFlow auto anything.
-  // We add only sharps/flats that are explicitly part of the note text.
   stripAccidentalsFromNotes(notes);
   addAccidentalsFromKeys(notes);
 } else {
-  // Normal behavior when naturals are allowed
   Accidental.applyAccidentals([voice], currentKeySig);
 }
 
+new Formatter().joinVoices([voice]).formatToStave([voice], stave);
+voice.draw(ctx, stave);
 
-    new Formatter().joinVoices([voice]).formatToStave([voice], stave);
-    voice.draw(ctx, stave);
-
-    Beam.generateBeams(notes).forEach(b => b.setContext(ctx).draw());
+Beam.generateBeams(notes).forEach(b => b.setContext(ctx).draw());
   }
 
   async function clefchanged(){
@@ -852,9 +877,6 @@ if (useKeyOnly) {
       renderAnalysisLine();
     }
   }
-
-  /* ---------- DOM refs ---------- */
-  let vfDiv: HTMLDivElement;
 
   /* ---------- Metronome ---------- */
   // Remove metronome logic and state:
@@ -899,6 +921,129 @@ if (useKeyOnly) {
   function setSongFromName(name:string) {
     setSong(name.toLowerCase().replace(/ /g, "-"), true);
   }
+
+
+
+  // ===== Preferences: shape + defaults =====
+type Prefs = {
+  selectedClef?: Clef;
+  selectedKeySig?: string;
+  selectedTS?: string;
+  enableHalves?: boolean;
+  enableEighths?: boolean;
+  useKeyOnly?: boolean;
+  allowNaturals?: boolean;
+  allowSharps?: boolean;
+  allowFlats?: boolean;
+  bpm?: number;
+  minDb?: number;
+};
+
+function getCurrentPrefs(): Prefs {
+  return {
+    selectedClef,
+    selectedKeySig,
+    selectedTS,
+    enableHalves,
+    enableEighths,
+    useKeyOnly,
+    allowNaturals,
+    allowSharps,
+    allowFlats,
+    bpm,
+    minDb
+  };
+}
+
+function applyPrefs(p: Prefs) {
+  if (!p) return;
+  if (p.selectedClef) selectedClef = p.selectedClef;
+  if (typeof p.selectedKeySig === 'string') selectedKeySig = p.selectedKeySig;
+  if (typeof p.selectedTS === 'string') selectedTS = p.selectedTS;
+
+  if (typeof p.enableHalves === 'boolean')  enableHalves  = p.enableHalves;
+  if (typeof p.enableEighths === 'boolean') enableEighths = p.enableEighths;
+
+  if (typeof p.useKeyOnly === 'boolean')    useKeyOnly    = p.useKeyOnly;
+  if (typeof p.allowNaturals === 'boolean') allowNaturals = p.allowNaturals;
+  if (typeof p.allowSharps === 'boolean')   allowSharps   = p.allowSharps;
+  if (typeof p.allowFlats === 'boolean')    allowFlats    = p.allowFlats;
+
+  if (typeof p.bpm === 'number')  bpm  = p.bpm;
+  if (typeof p.minDb === 'number') minDb = p.minDb;
+
+  // after applying prefs, regenerate the random staff so UI reflects them
+  generateRandomLine();
+}
+
+// ===== Load / Save helpers =====
+let prefsLoaded = false;
+let saveTimer: number | null = null;
+
+async function loadPrefsFromDb() {
+  const { data: u } = await supabase.auth.getUser();
+  const user = u?.user;
+  if (!user) { prefsLoaded = false; return; }
+
+  const { data, error } = await supabase
+    .from('user_prefs')
+    .select('prefs')
+    .eq('user_id', user.id)
+    .maybeSingle();
+
+  if (error && error.code !== 'PGRST116') {
+    console.error('loadPrefs error', error.message);
+    return;
+  }
+
+  if (data?.prefs) applyPrefs(data.prefs as Prefs);
+  prefsLoaded = true;
+}
+
+async function savePrefsToDb(p: Prefs) {
+  const { data: u } = await supabase.auth.getUser();
+  const user = u?.user;
+  if (!user) return;
+
+  const { error } = await supabase
+    .from('user_prefs')
+    .upsert(
+      { user_id: user.id, prefs: p },
+      { onConflict: 'user_id' }
+    )
+    .select()
+    .single();
+
+  if (error) console.error('savePrefs error', error.message);
+}
+
+function schedulePrefsSave() {
+  if (!prefsLoaded) return;               // don't save until initial load finished
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = window.setTimeout(() => {
+    savePrefsToDb(getCurrentPrefs());
+  }, 600); // debounce ~0.6s
+}
+
+// ===== Hook into auth + initial mount =====
+onMount(async () => {
+  await loadPrefsFromDb();
+});
+
+supabase.auth.onAuthStateChange((_e, s) => {
+  if (s?.user) loadPrefsFromDb();
+});
+
+// ===== Autosave when relevant state changes =====
+$: if (prefsLoaded) {
+  // Any of these changing will schedule a save
+  void selectedClef, selectedKeySig, selectedTS,
+       enableHalves, enableEighths,
+       useKeyOnly, allowNaturals, allowSharps, allowFlats,
+       bpm, minDb;
+  schedulePrefsSave();
+}
+
 </script>
 
 <div class="main-container">
@@ -1097,7 +1242,7 @@ if (useKeyOnly) {
 
   <!-- Metronome Section -->
   <section class="metronome-section">
-    <Metronome {ctx} />
+    <Metronome {ctx} bind:bpm />
   </section>
 
   <!-- Song Management Section -->
@@ -1226,10 +1371,24 @@ if (useKeyOnly) {
 
   .auth-input {
     padding: 0.5rem 1rem;
-    border: none;
+    border: 2px solid rgba(255, 255, 255, 0.35);
     border-radius: 0.5rem;
     font-size: 0.9rem;
     min-width: 250px;
+    background: rgba(255, 255, 255, 0.12);
+    color: #fff;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+  }
+
+  .auth-input::placeholder {
+    color: rgba(255, 255, 255, 0.85);
+  }
+
+  .auth-input:focus {
+    outline: none;
+    border-color: rgba(255, 255, 255, 0.95);
+    background: rgba(255, 255, 255, 0.18);
+    box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.25);
   }
 
   .auth-button {

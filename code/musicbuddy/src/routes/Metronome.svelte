@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy, createEventDispatcher } from 'svelte';
   export let ctx: AudioContext | undefined = undefined;
-  let bpm = 120;
+  export let bpm = 120;
   let metroOn = false;
   let tickInterval: number | null = null;
   let beatsPerBar = 4;
