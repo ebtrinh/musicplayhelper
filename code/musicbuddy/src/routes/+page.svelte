@@ -482,7 +482,9 @@ if (useKeyOnly) {
     new Formatter().joinVoices([voice]).formatToStave([voice], stave);
     voice.draw(ctx, stave);
 
-    Beam.generateBeams(notes).forEach(b => b.setContext(ctx).draw());
+    const beams = Beam.generateBeams(notes);
+    hideFlagsForBeamedNotes(beams as any);
+    beams.forEach(b => b.setContext(ctx).draw());
   }
 
   const NOTE_LETTERS = ['c','d','e','f','g','a','b'];
@@ -938,7 +940,9 @@ if (useKeyOnly) {
 new Formatter().joinVoices([voice]).formatToStave([voice], stave);
 voice.draw(ctx, stave);
 
-Beam.generateBeams(notes).forEach(b => b.setContext(ctx).draw());
+const beams = Beam.generateBeams(notes);
+hideFlagsForBeamedNotes(beams as any);
+beams.forEach(b => b.setContext(ctx).draw());
 // After drawing, make SVG responsive
 const svgRoot2 = vfDiv.querySelector('svg') as SVGSVGElement | null;
 if (svgRoot2) {
@@ -967,37 +971,12 @@ if (svgRoot2) {
 
   /* ---------- Preset songs ---------- */
   const songs = [
+    "Hot Cross Buns",  
     "Ode to Joy",
     "Mary Had a Little Lamb",
     "Twinkle Twinkle Little Star",
     "Baa Baa Black Sheep",
-    "Row, Row, Row Your Boat",
-    "London Bridge is Falling Down",
-    "Frère Jacques",
-    "Jingle Bells",
-    "Yankee Doodle",
-    "Für Elise",
-    "Minuet in G",
-    "Canon in D",
-    "Eine kleine Nachtmusik",
-    "The Blue Danube",
-    "In the Hall of the Mountain King",
-    "Spring",
-    "Happy Birthday",
-    "Scarborough Fair",
-    "Amazing Grace",
-    "Oh! Susanna",
-    "Aura Lee",
-    "She'll Be Comin' Round the Mountain",
-    "Home on the Range",
-    "Auld Lang Syne",
-    "Danny Boy",
-    "Silent Night",
-    "Deck the Halls",
-    "We Wish You a Merry Christmas",
-    "The First Noel",
-    "O Christmas Tree",
-    "Up on the Housetop"
+    "Row, Row, Row Your Boat"
   ];
   function setSongFromName(name:string) {
     setSong(name.toLowerCase().replace(/ /g, "-"), true);
@@ -1123,6 +1102,39 @@ $: if (prefsLoaded) {
        useKeyOnly, allowNaturals, allowSharps, allowFlats,
        bpm, minDb;
   schedulePrefsSave();
+}
+
+// Hide flags on notes that are part of a beam (VexFlow normally does this,
+// but some builds can still render flags; force-disable for beamed notes)
+function hideFlagsForBeamedNotes(beams: any[]) {
+  (beams || []).forEach((b: any) => {
+    const ns: any[] = b?.notes || b?.getNotes?.() || [];
+    ns.forEach((n: any) => {
+      try {
+        n.render_flag = false;
+        if (n.flag) n.flag = undefined;
+        // force-disable flag drawing on this note instance
+        if (typeof n.drawFlag === 'function') {
+          n.drawFlag = () => {};
+        }
+        console.log('hideFlagsForBeamedNotes(): disabled flag for', n.getDuration?.());
+      } catch {}
+    });
+  });
+  // Fallback: if any beam exists, disable flags on all 8th/16th notes in the measure
+  if ((beams || []).length > 0) {
+    (notes as any[]).forEach((n: any) => {
+      const dur = n.getDuration?.() || n.getDuration?.();
+      if (typeof dur === 'string' && (/^(8|16)/.test(dur))) {
+        try {
+          n.render_flag = false;
+          if (n.flag) n.flag = undefined;
+          if (typeof n.drawFlag === 'function') n.drawFlag = () => {};
+          console.log('fallback flag disable on', dur);
+        } catch {}
+      }
+    });
+  }
 }
 
 </script>
