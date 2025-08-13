@@ -224,6 +224,7 @@ function normalizeBeats(b: number) {
   const HIST = 5;
   const HOLD_MS = 3000;
   const BUF_SIZE = 4096;
+  let currentBeats = MEASURE_BEATS; // live beats for the active measure
 
   const TS_OPTIONS = [
     { label: '2/4', beats: 2 },
@@ -421,8 +422,17 @@ function hasNaturalGlyph(ns: StaveNote[]): boolean {
 
   function renderStaff(beats: number): void {
     if (!vfDiv) return;
+    if (!notes || notes.length === 0) return;
 
-    const voice = new Voice({ numBeats: beats, beatValue: 4 }).addTickables(notes);
+    console.log('renderStaff():', { mode: msreCount === -1 ? 'random' : 'analysis', beatsArg: beats, currentBeats });
+    const voice = new Voice({ numBeats: beats, beatValue: 4 });
+    // Avoid strict timing errors if rounding creates tiny mismatches
+    if ((voice as any).setStrict) {
+      (voice as any).setStrict(false);
+    } else if ((voice as any).setMode && (Voice as any).Mode) {
+      (voice as any).setMode((Voice as any).Mode.SOFT);
+    }
+    voice.addTickables(notes);
 
     const fmt = new Formatter();
     fmt.joinVoices([voice]).preFormat();
@@ -537,11 +547,14 @@ if (useKeyOnly) {
       return false;
     };
 
+    // remember previous measure first target to avoid carry-over match
+    prevTargetFirst = target.length ? target[0] : null;
     msreCount = -1;
     line = []; target = []; i = 0;
-    gate = 'READY'; // Reset state machine
+    gate = 'WAIT_ATTACK'; // force a fresh note attack for new measure
+    matchedFreq = 0; // avoid carry-over matching across measures
     lastNoteTime = 0;
-    matchedFreq = 0;
+    haveGoneQuiet = false;
 
   currentKeySig = resolveKey();
   km = new KeyManager(currentKeySig);
@@ -653,7 +666,7 @@ if (useKeyOnly) {
 
       // record the in-bar state and add the note
       setLedger(L, o, resulting);
-      notes.push(new StaveNote({ keys:[keyStr], duration: choice.dur, clef: selectedClef }));
+      notes.push(new StaveNote({ keys:[keyStr], duration: choice.dur, clef: selectedClef, autoStem: true }));
     }
 
     // final guard: simulate accidentals; if naturals appear while disallowed → rebuild
@@ -668,7 +681,9 @@ if (useKeyOnly) {
     break; // accept this bar
   }
 
-  renderStaff(MEASURE_BEATS);   
+  currentBeats = MEASURE_BEATS;
+  console.log('generateRandomLine(): set currentBeats', currentBeats);
+  renderStaff(currentBeats);   
   console.log('📝 Generated random notes:', { line, target, notesCount: notes.length });
 }
 
@@ -706,6 +721,9 @@ if (useKeyOnly) {
   let i = 0;
   let lastNoteTime = 0;           // Track when we last matched a note
   const NOTE_TIMEOUT = 2000;      // Force transition after 2 seconds
+  let haveGoneQuiet = false;      // Require silence before next attack
+  let prevTargetFirst: number | null = null; // first target of previous measure
+  let deferNextFrame = false;     // defer evaluation after regenerating measure
 
   let octRejectStreak = 0;          // how many consecutive subharmonic rejections
 const OCT_STREAK_LIMIT = 6;       // accept after ~6 frames (~100–200 ms)
@@ -750,20 +768,31 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
     switch (gate) {
       case 'READY':
         if (isRealNote(note) && canon(note) === target[i]) {
+          // additionally, block an immediate match if this is i===0 and equals previous first target
+          if (i === 0 && prevTargetFirst !== null && prevTargetFirst === target[0] && !haveGoneQuiet) {
+            // wait for genuine new attack
+            break;
+          }
           markNoteGreen(notes[i]);
           matchedFreq = freq;
           lastNoteTime = Date.now();
           i++;
-          renderStaff(MEASURE_BEATS);
+          renderStaff(currentBeats);
           if (i === notes.length){
             if (msreCount == -1){
               generateRandomLine();
+              gate = 'WAIT_ATTACK'; haveGoneQuiet = false; matchedFreq = 0; i = 0;
+              deferNextFrame = true;
+              break;
             } else {
               if (msreCount == totalMsre-1){
                 // Song complete
               } else {
                 msreCount++;
                 renderAnalysisLine();
+                gate = 'WAIT_ATTACK'; haveGoneQuiet = false; matchedFreq = 0; i = 0;
+                deferNextFrame = true;
+                break;
               }
             }
           }
@@ -781,6 +810,7 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
         
         if (loudness < minDb) {
           gate = 'WAIT_ATTACK';
+          haveGoneQuiet = true; // already quiet after last match
         } else if (freq && matchedFreq && isClearlyDifferent(freq, matchedFreq)) {
           gate = 'READY';
         } else if (freq && isRealNote(note) && canon(note) !== target[i]) {
@@ -788,10 +818,15 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
         }
         break;
       case 'WAIT_ATTACK':
-        if (loudness >= minDb) {
-          gate = 'READY';
-        }
+        // Require a silence below threshold before allowing the next attack
+        if (loudness < minDb - 2) haveGoneQuiet = true; // small hysteresis
+        else if (haveGoneQuiet && loudness >= minDb) gate = 'READY';
         break;
+    }
+    if (deferNextFrame) {
+      deferNextFrame = false;
+      raf = requestAnimationFrame(tick);
+      return;
     }
     raf = requestAnimationFrame(tick);
   }
@@ -831,10 +866,13 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
     currentKeySig = measures[msreCount].key.split(' ')[0];
     km          = new KeyManager(currentKeySig);
 
+    // remember previous measure first target
+    prevTargetFirst = target.length ? target[0] : null;
     line = []; target = []; i = 0;
-    gate = 'READY'; // Reset state machine
+    gate = 'WAIT_ATTACK'; // force a fresh note attack when switching measures
     lastNoteTime = 0;
-    matchedFreq = 0;
+    matchedFreq = 0; // avoid carry-over matching across measures
+    haveGoneQuiet = false;
     
     for (let x = 0; x < notes.length; x++) {
       const k = notes[x].keys[0];
@@ -846,9 +884,14 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
 const beatsFloat = beatsFromNotes(notes);   // sum from the durations you parsed
 const beats      = normalizeBeats(beatsFloat);
 const beatValue  = 4;                       // draw as /4 (you can switch to XML time if you like)
+currentBeats = beats;
+console.log('renderAnalysisLine(): set currentBeats from analysis', { msreCount, beats });
 
 // Build the voice to match what will actually be drawn
-const voice = new Voice({ numBeats: beats, beatValue }).addTickables(notes);
+const voice = new Voice({ numBeats: beats, beatValue });
+if ((voice as any).setStrict) { (voice as any).setStrict(false); }
+else if ((voice as any).setMode && (Voice as any).Mode) { (voice as any).setMode((Voice as any).Mode.SOFT); }
+voice.addTickables(notes);
 
 // --- compute safe width (no cutoffs / no huge gaps) ---
 const fmt = new Formatter();
@@ -877,7 +920,7 @@ if (svgRoot) {
 }
 const stave = new Stave(10, 20, width)
   .addClef(selectedClef)
-  .addTimeSignature(`${beats}/${beatValue}`)
+  .addTimeSignature(`${beats}/4`)
   .addKeySignature(currentKeySig);
 
 stave.setContext(ctx).draw();
@@ -1265,7 +1308,6 @@ $: if (prefsLoaded) {
         <span class="frequency-unit">Hz</span>
       </div>
       <div class="note-display">{note}</div>
-      <div class="state-indicator">State: {gate}</div>
     </div>
 
     <div class="audio-controls">
@@ -1714,15 +1756,6 @@ $: if (prefsLoaded) {
     font-weight: 700;
     color: #374151;
     margin-bottom: 1rem;
-  }
-
-  .state-indicator {
-    font-size: 1rem;
-    color: #6b7280;
-    background: #f3f4f6;
-    padding: 0.5rem 1rem;
-    border-radius: 1rem;
-    display: inline-block;
   }
 
   .audio-controls {

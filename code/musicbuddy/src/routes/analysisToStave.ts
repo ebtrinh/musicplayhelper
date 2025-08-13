@@ -72,7 +72,7 @@ const NOTE_RE=/^([A-Ga-g])([#b♯♭]?)(\d)$/;
 function tokenToStave(tok:string,clef:string){
   const m=NOTE_RE.exec(tok); if(!m) throw`Bad note token ${tok}`;
   const [ ,lt,acc,oc]=m; const key=lt.toUpperCase()+acc.replace('♯','#').replace('♭','b')+'/'+oc;
-  return new StaveNote({ clef, duration:'q', keys:[key] });
+  return new StaveNote({ clef, duration:'q', keys:[key], autoStem: true });
 }
 
 /*──────────── parseAugmentedNet ───────────*/
@@ -86,7 +86,7 @@ export function parseAugmentedNet(raw:string, clef:string):MeasureData[]{
     if(rom){
       const midis=romanToMidis(key,parseRoman(rom)!);
       const keys=midis.map(m=>`${NOTE_ORDER[m%12].replace('#','')}/${Math.floor(m/12)-1}`);
-      out.push({num,key,roman:rom,notes:[new StaveNote({clef,duration:'q',keys})]});
+      out.push({num,key,roman:rom,notes:[new StaveNote({clef,duration:'q',keys, autoStem: true})]});
       return;
     }
     const noteToks=toks.filter(t=>NOTE_RE.test(t));
@@ -110,7 +110,7 @@ export function parseMusicXML(xml:string, clef:string):MeasureData[]{
       const oct =n.querySelector('pitch > octave')?.textContent||'4';
       const alt =n.querySelector('pitch > alter')?.textContent;
       const acc =alt?(alt==='1'?'#':'b'):'';
-      notes.push(new StaveNote({clef,duration:'q',keys:[`${step}${acc}/${oct}`]}));
+      notes.push(new StaveNote({clef,duration:'q',keys:[`${step}${acc}/${oct}`], autoStem: true}));
     });
     if(notes.length) out.push({num,key,roman:'melody',notes});
   });
