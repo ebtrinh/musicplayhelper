@@ -1,62 +1,86 @@
 <script lang="ts">
-  import { onDestroy, createEventDispatcher } from 'svelte';
-  export let ctx: AudioContext | undefined = undefined;
-  export let bpm = 120;
-  let metroOn = false;
-  let tickInterval: number | null = null;
-  let beatsPerBar = 4;
-  let metroIdx = 0;
+	import { onDestroy, createEventDispatcher } from 'svelte';
+	export let ctx: AudioContext | undefined = undefined;
+	export let bpm = 120;
+	let metroOn = false;
+	let tickInterval: number | null = null;
+	let beatsPerBar = 4;
+	let metroIdx = 0;
 
-  const dispatch = createEventDispatcher();
+	const dispatch = createEventDispatcher();
 
-  function playClick(accent = false) {
-    if (!ctx) return;
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.frequency.value = accent ? 1600 : 1000;
-    gain.gain.value     = accent ? 0.35  : 0.20;
-    osc.connect(gain).connect(ctx.destination);
-    osc.start();
-    osc.stop(ctx.currentTime + 0.05);
-  }
-  function metronomeTick() {
-    playClick(metroIdx === 0);
-    metroIdx = (metroIdx + 1) % beatsPerBar;
-  }
-  function startMetronome() {
-    stopMetronome();
-    metroIdx = 0;
-    metronomeTick();
-    tickInterval = window.setInterval(metronomeTick, 60000 / bpm);
-    metroOn = true;
-    dispatch('start');
-  }
-  function stopMetronome() {
-    if (tickInterval !== null) clearInterval(tickInterval);
-    tickInterval = null;
-    metroOn = false;
-    dispatch('stop');
-  }
-  function toggleMetronome() {
-    metroOn ? stopMetronome() : startMetronome();
-  }
-  $: if (metroOn) {
-    stopMetronome();
-    startMetronome();
-  }
-  onDestroy(() => { stopMetronome(); });
+	let localCtx: AudioContext | undefined;
+	async function ensureContext(): Promise<boolean> {
+		try {
+			if (!ctx) {
+				const AC: typeof AudioContext = (window as any).AudioContext || (window as any).webkitAudioContext;
+				ctx = new AC();
+			}
+			if (ctx.state === 'suspended') {
+				await ctx.resume();
+			}
+			localCtx = ctx;
+			return true;
+		} catch {
+			return false;
+		}
+	}
 
-  const TS_OPTIONS = [
-    { label: '2/4', beats: 2 },
-    { label: '3/4', beats: 3 },
-    { label: '4/4', beats: 4 },
-    { label: '6/8', beats: 6 }
-  ];
-  let selectedTS = TS_OPTIONS[2].label;
-  function tsChanged() {
-    const opt = TS_OPTIONS.find(o => o.label === selectedTS);
-    if (opt) { beatsPerBar = opt.beats; metroIdx = 0; }
-  }
+	function playClick(accent = false) {
+		if (!localCtx) return;
+		const start = localCtx.currentTime;
+		const osc = localCtx.createOscillator();
+		const gain = localCtx.createGain();
+		osc.type = 'sine';
+		osc.frequency.setValueAtTime(accent ? 1600 : 1000, start);
+		gain.gain.setValueAtTime(accent ? 0.25 : 0.12, start);
+		gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.06);
+		osc.connect(gain).connect(localCtx.destination);
+		osc.start(start);
+		osc.stop(start + 0.07);
+	}
+	function metronomeTick() {
+		playClick(metroIdx === 0);
+		metroIdx = (metroIdx + 1) % beatsPerBar;
+	}
+	async function startMetronome() {
+		await stopMetronome();
+		const ok = await ensureContext();
+		if (!ok) return;
+		metroIdx = 0;
+		metroOn = true; // set first so refreshInterval can arm the timer
+		metronomeTick();
+		refreshInterval();
+		dispatch('start');
+	}
+	async function stopMetronome() {
+		if (tickInterval !== null) clearInterval(tickInterval);
+		tickInterval = null;
+		metroOn = false;
+		dispatch('stop');
+	}
+	async function toggleMetronome() {
+		if (metroOn) await stopMetronome(); else await startMetronome();
+	}
+	function refreshInterval() {
+		if (!metroOn) return;
+		if (tickInterval !== null) clearInterval(tickInterval);
+		tickInterval = window.setInterval(metronomeTick, Math.max(10, 60000 / Math.max(30, Math.min(300, bpm))));
+	}
+	onDestroy(() => { if (tickInterval !== null) clearInterval(tickInterval); });
+
+	const TS_OPTIONS = [
+		{ label: '2/4', beats: 2 },
+		{ label: '3/4', beats: 3 },
+		{ label: '4/4', beats: 4 },
+		{ label: '6/8', beats: 6 }
+	];
+	let selectedTS = TS_OPTIONS[2].label;
+	function tsChanged() {
+		const opt = TS_OPTIONS.find(o => o.label === selectedTS);
+		if (opt) { beatsPerBar = opt.beats; metroIdx = 0; }
+		refreshInterval();
+	}
 </script>
 
 <div class="metronome">
@@ -66,7 +90,7 @@
 		</button>
 		<label class="ctrl">
 			<span class="lbl">BPM:</span>
-			<input type="number" min="30" max="300" bind:value={bpm} class="num" />
+			<input type="number" min="30" max="300" bind:value={bpm} on:input={refreshInterval} class="num" />
 		</label>
 		<label class="ctrl">
 			<span class="lbl">Beats/Bar:</span>
