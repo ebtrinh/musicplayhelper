@@ -1390,6 +1390,7 @@ $: if (prefsLoaded) {
     justify-content: center;
     color: white;
     flex-wrap: wrap;
+    width: 100%;
   }
 
   .auth-label {
@@ -1436,6 +1437,7 @@ $: if (prefsLoaded) {
     font-weight: 600;
     cursor: pointer;
     transition: all 0.2s ease;
+    max-width: 100%;
   }
 
   .auth-button:hover {
