@@ -133,6 +133,14 @@ function normalizeBeats(b: number) {
     supabase.auth.onAuthStateChange((_event, session) => {
       userEmail = session?.user?.email ?? '';
     });
+    if (typeof window === 'undefined') return;
+    try {
+      if ('fonts' in document) {
+        await (document as any).fonts.ready;
+      }
+    } catch {}
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    generateRandomLine();
   });
 
   async function signInWithEmail() {
@@ -389,11 +397,6 @@ function hasNaturalGlyph(ns: StaveNote[]): boolean {
   const GREEN = '#16a34a';
   const markNoteGreen = (n: StaveNote) => n.setStyle({ fillStyle: GREEN, strokeStyle: GREEN });
 
-  function clearStaffContainer() {
-    if (!vfDiv) return;
-    while (vfDiv.firstChild) vfDiv.removeChild(vfDiv.firstChild);
-  }
-
   function calcStaveWidth(ns: StaveNote[], accCount: number): number {
     const BASE = 120;
     const PER_ACC = 18;
@@ -422,7 +425,7 @@ function hasNaturalGlyph(ns: StaveNote[]): boolean {
     const voice = new Voice({ numBeats: beats, beatValue: 4 }).addTickables(notes);
 
     const fmt = new Formatter();
-    fmt.joinVoices([voice]).format([voice], 0);
+    fmt.joinVoices([voice]).preFormat();
     const minNotesWidth = fmt.getMinTotalWidth();
 
     vfDiv.innerHTML = '';
@@ -849,7 +852,7 @@ const voice = new Voice({ numBeats: beats, beatValue }).addTickables(notes);
 
 // --- compute safe width (no cutoffs / no huge gaps) ---
 const fmt = new Formatter();
-fmt.joinVoices([voice]).format([voice], 0);
+fmt.joinVoices([voice]).preFormat();
 const minNotesWidth = fmt.getMinTotalWidth();
 
 vfDiv.innerHTML = '';
@@ -860,17 +863,17 @@ const ctx = renderer.getContext();
 const leadIn    = measureLead(ctx, beats);
 const accCnt    = accidentalCount(currentKeySig);
 const heuristic = calcStaveWidth(notes, accCnt);
-const width     = Math.ceil(Math.max(heuristic, minNotesWidth + leadIn + 20));
+const width     = Math.ceil(Math.max(heuristic,  leadIn + 20));
 
 renderer.resize(width, 140);
 // Make SVG responsive: set viewBox and fluid size
-const svgRoot2 = vfDiv.querySelector('svg');
-if (svgRoot2) {
-  svgRoot2.setAttribute('viewBox', `0 0 ${width} 140`);
-  svgRoot2.setAttribute('preserveAspectRatio', 'xMinYMin meet');
-  (svgRoot2 as SVGSVGElement).style.width = '100%';
-  (svgRoot2 as SVGSVGElement).style.height = 'auto';
-  (svgRoot2 as SVGSVGElement).style.display = 'block';
+const svgRoot = vfDiv.querySelector('svg');
+if (svgRoot) {
+  svgRoot.setAttribute('viewBox', `0 0 ${width} 140`);
+  svgRoot.setAttribute('preserveAspectRatio', 'xMinYMin meet');
+  (svgRoot as SVGSVGElement).style.width = '100%';
+  (svgRoot as SVGSVGElement).style.height = 'auto';
+  (svgRoot as SVGSVGElement).style.display = 'block';
 }
 const stave = new Stave(10, 20, width)
   .addClef(selectedClef)
@@ -893,6 +896,15 @@ new Formatter().joinVoices([voice]).formatToStave([voice], stave);
 voice.draw(ctx, stave);
 
 Beam.generateBeams(notes).forEach(b => b.setContext(ctx).draw());
+// After drawing, make SVG responsive
+const svgRoot2 = vfDiv.querySelector('svg') as SVGSVGElement | null;
+if (svgRoot2) {
+  svgRoot2.setAttribute('viewBox', `0 0 ${width} 140`);
+  svgRoot2.setAttribute('preserveAspectRatio', 'xMinYMin meet');
+  svgRoot2.style.width = '100%';
+  svgRoot2.style.height = 'auto';
+  svgRoot2.style.display = 'block';
+}
   }
 
   async function clefchanged(){
