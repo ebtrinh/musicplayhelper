@@ -334,26 +334,34 @@ function hasNaturalGlyph(ns: StaveNote[]): boolean {
 
   onMount(async () => {
     if (typeof window === 'undefined') return;
+    generateRandomLine();
+  });
+
+  // Microphone permission flow
+  let micEnabled = false;
+  let micError = '';
+  async function enableMic() {
+    micError = '';
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       ctx = new AudioContext();
       analyser = ctx.createAnalyser();
       analyser.fftSize = BUF_SIZE;
-
       yinDetect = YIN({
         sampleRate: ctx.sampleRate,
         threshold: THRESH,
         probabilityThreshold: PROB_MIN,
       });
       ctx.createMediaStreamSource(stream).connect(analyser);
-
       running = true;
+      micEnabled = true;
       raf = window.requestAnimationFrame(tick);
-    } catch {
-      alert('⚠️ Microphone permission denied.');
+    } catch (e) {
+      micError = 'Microphone permission denied. Enable mic in your browser settings and try again.';
+      micEnabled = false;
+      running = false;
     }
-    generateRandomLine();
-  });
+  }
 
   function detect(buf: Float32Array): number {
     let sum = 0;
@@ -1213,6 +1221,14 @@ $: if (prefsLoaded) {
 
   <!-- Pitch Detection Display -->
   <section class="pitch-display">
+    {#if !micEnabled}
+      <div class="mic-permission">
+        <button class="mic-button" on:click={enableMic}>Enable Microphone</button>
+        {#if micError}
+          <div class="mic-error">{micError}</div>
+        {/if}
+      </div>
+    {/if}
     <div class="pitch-info">
       <div class="frequency-display">
         <span class="frequency-value">{freq || '--'}</span>
@@ -1612,6 +1628,26 @@ $: if (prefsLoaded) {
     box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
     border: 1px solid #e5e7eb;
   }
+
+  .mic-permission {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+  }
+  .mic-button {
+    padding: 0.75rem 1.5rem;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border: none;
+    border-radius: 0.75rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+  }
+  .mic-button:hover { transform: translateY(-2px); box-shadow: 0 8px 25px rgba(102,126,234,0.3); }
+  .mic-error { color: #b91c1c; font-size: 0.9rem; }
 
   .pitch-info {
     text-align: center;

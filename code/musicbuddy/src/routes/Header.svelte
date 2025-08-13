@@ -47,6 +47,11 @@
 		border: 1px solid rgba(229, 231, 235, 0.4);
 		position: relative;
 		z-index: 20;
+		width: 100vw;
+		left: 50%;
+		right: 50%;
+		margin-left: -50vw;
+		margin-right: -50vw;
 	}
 
 	.corner {
@@ -184,9 +189,7 @@
 
 	/* Responsive: mobile menu */
 	@media (max-width: 768px) {
-		header {
-			padding: 0.75rem 1rem;
-		}
+		header { padding: 0.75rem 1rem; border-radius: 0 0 0.75rem 0.75rem; }
 		.menu-toggle { display: inline-flex; }
 		nav {
 			position: absolute;
