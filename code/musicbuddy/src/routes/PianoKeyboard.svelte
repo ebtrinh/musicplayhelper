@@ -37,6 +37,12 @@
     if (!NOTE_FREQUENCIES[note]) return;
     
     pressedKey = note;
+    
+    // GA event for piano key pressed
+    if (typeof window !== 'undefined' && (window as any).gtag) {
+      (window as any).gtag('event', 'piano_key_pressed', { note });
+    }
+    
     dispatch('notePlayed', { 
       note, 
       frequency: NOTE_FREQUENCIES[note] 
