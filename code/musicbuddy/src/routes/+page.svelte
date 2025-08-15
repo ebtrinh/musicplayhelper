@@ -17,7 +17,40 @@
   import { supabase } from '$lib/supabaseClient';
   import Metronome from './Metronome.svelte';
 
-  
+  const GA_ID = 'G-M8YCNKB6FZ';
+
+// Type helpers (optional, keeps TS happy)
+// drop all `declare global` stuff and use this instead
+
+type GAQueued = { action: string; params: Record<string, any> };
+
+function getWin(): (Window & {
+  gtag?: (...args: any[]) => void;
+  __gaQueue?: GAQueued[];
+}) | undefined {
+  return typeof window === 'undefined' ? undefined : (window as any);
+}
+
+function gaEvent(action: string, params: Record<string, any> = {}) {
+  const w = getWin();
+  if (!w) return; // SSR guard
+  if (typeof w.gtag === 'function') {
+    w.gtag('event', action, params);
+  } else {
+    (w.__gaQueue ||= []).push({ action, params });
+  }
+}
+
+// flush queued events once mounted (and gtag exists)
+onMount(() => {
+  const w = getWin();
+  if (w?.gtag && w.__gaQueue?.length) {
+    for (const e of w.__gaQueue) w.gtag('event', e.action, e.params);
+    w.__gaQueue = [];
+  }
+});
+
+
 
   /* --- constants & helpers --- */
   const NOTES = ['C','C♯','D','D♯','E','F','F♯','G','G♯','A','A♯','B'];
@@ -144,6 +177,7 @@ function normalizeBeats(b: number) {
   });
 
   async function signInWithEmail() {
+    gaEvent('sign_in_press', { method: 'email_magic_link' });
     if (!emailInput) return alert('Enter an email first');
     const { error } = await supabase.auth.signInWithOtp({ email: emailInput });
     if (error) alert(error.message);
@@ -193,6 +227,7 @@ function normalizeBeats(b: number) {
 
     if (error) return alert(error.message);
     customName = '';
+    gaEvent('custom_song_saved', { name });
     await loadCustomSongs();
   }
 
@@ -687,6 +722,14 @@ if (useKeyOnly) {
   console.log('generateRandomLine(): set currentBeats', currentBeats);
   renderStaff(currentBeats);   
   console.log('📝 Generated random notes:', { line, target, notesCount: notes.length });
+  gaEvent('staff_generated', {
+  clef: selectedClef,
+  key: currentKeySig,
+  halves: enableHalves,
+  eighths: enableEighths,
+  useKeyOnly,
+  allowNaturals, allowSharps, allowFlats
+});
 }
 
 
@@ -775,6 +818,14 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
             // wait for genuine new attack
             break;
           }
+          const matchedIndex = i;
+    const matchedLabel = line[matchedIndex] || '';
+          gaEvent('correct_note', {
+      index: matchedIndex,
+      label: matchedLabel,
+      clef: selectedClef,
+      key: currentKeySig
+    });
           markNoteGreen(notes[i]);
           matchedFreq = freq;
           lastNoteTime = Date.now();
@@ -979,6 +1030,7 @@ if (svgRoot2) {
     "Row, Row, Row Your Boat"
   ];
   function setSongFromName(name:string) {
+    gaEvent('preset_song_click', { name });
     setSong(name.toLowerCase().replace(/ /g, "-"), true);
   }
 
@@ -1297,7 +1349,13 @@ function hideFlagsForBeamedNotes(beams: any[]) {
   <section class="staff-section">
     <div class="staff-container">
       <div bind:this={vfDiv} class="staff-display"></div>
-      <button on:click={generateRandomLine} class="new-staff-button">
+      
+      <button on:click={
+        () => {
+          gaEvent('new_staff_click', { clef: selectedClef, key: selectedKeySig, halves: enableHalves, eighths: enableEighths, useKeyOnly, allowNaturals, allowSharps, allowFlats });
+          generateRandomLine();
+        }
+      } class="new-staff-button">
         <span class="button-icon">🎵</span>
         New Staff
       </button>

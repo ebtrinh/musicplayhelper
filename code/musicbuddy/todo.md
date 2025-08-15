@@ -38,6 +38,10 @@
     - 5/5 desire
     - only once completely finished
 
+- get feedback
+- make a discord server to talk to users directly
+    - make more professional discord account first
+
 
 ----------------------
 DONE
