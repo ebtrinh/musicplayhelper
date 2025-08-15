@@ -1277,7 +1277,27 @@ function handlePianoNote(note: string, frequency: number) {
     i++;
     
     // Re-render the staff to show the green note
+    // Use a fresh copy of notes to avoid VexFlow conflicts
+    const notesCopy = notes.map((note, idx) => {
+      if (idx === matchedIndex) {
+        // Create a new note object with green styling
+        const newNote = new StaveNote({
+          keys: note.getKeys(),
+          duration: note.getDuration(),
+          clef: selectedClef,
+          autoStem: true
+        });
+        newNote.setStyle({ fillStyle: GREEN, strokeStyle: GREEN });
+        return newNote;
+      }
+      return note;
+    });
+    
+    // Temporarily replace notes array and re-render
+    const originalNotes = notes;
+    notes = notesCopy;
     renderStaff(currentBeats);
+    notes = originalNotes;
     
     if (i === notes.length) {
       if (msreCount == -1) {
@@ -1463,10 +1483,10 @@ function handlePianoNote(note: string, frequency: number) {
 
   <!-- Staff Section -->
   <section class="staff-section">
-    <div class="staff-container">
-      <div bind:this={vfDiv} class="staff-display"></div>
-      
-      <button on:click={
+          <div class="staff-container">
+        <div bind:this={vfDiv} class="staff-display"></div>
+        
+        <button on:click={
         () => {
           gaEvent('new_staff_click', { clef: selectedClef, key: selectedKeySig, halves: enableHalves, eighths: enableEighths, useKeyOnly, allowNaturals, allowSharps, allowFlats });
           generateRandomLine();
