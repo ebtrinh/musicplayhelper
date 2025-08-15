@@ -16,6 +16,7 @@
   import { parseMusicXML, type MeasureData } from './analysisToStave';
   import { supabase } from '$lib/supabaseClient';
   import Metronome from './Metronome.svelte';
+  import PianoKeyboard from './PianoKeyboard.svelte';
 
   const GA_ID = 'G-M8YCNKB6FZ';
 
@@ -384,6 +385,7 @@ function hasNaturalGlyph(ns: StaveNote[]): boolean {
   // Microphone permission flow
   let micEnabled = false;
   let micError = '';
+  let pianoKeyboardVisible = false;
   async function enableMic() {
     micError = '';
     try {
@@ -431,7 +433,16 @@ function hasNaturalGlyph(ns: StaveNote[]): boolean {
   });
 
   const GREEN = '#16a34a';
-  const markNoteGreen = (n: StaveNote) => n.setStyle({ fillStyle: GREEN, strokeStyle: GREEN });
+  const markNoteGreen = (n: StaveNote) => {
+    try {
+      // Safely set the note style
+      if (n && typeof n.setStyle === 'function') {
+        n.setStyle({ fillStyle: GREEN, strokeStyle: GREEN });
+      }
+    } catch (error) {
+      console.warn('Error marking note green:', error);
+    }
+  };
 
   function calcStaveWidth(ns: StaveNote[], accCount: number): number {
     const BASE = 120;
@@ -459,67 +470,77 @@ function hasNaturalGlyph(ns: StaveNote[]): boolean {
     if (!vfDiv) return;
     if (!notes || notes.length === 0) return;
 
-    console.log('renderStaff():', { mode: msreCount === -1 ? 'random' : 'analysis', beatsArg: beats, currentBeats });
-    const voice = new Voice({ numBeats: beats, beatValue: 4 });
-    // Avoid strict timing errors if rounding creates tiny mismatches
-    if ((voice as any).setStrict) {
-      (voice as any).setStrict(false);
-    } else if ((voice as any).setMode && (Voice as any).Mode) {
-      (voice as any).setMode((Voice as any).Mode.SOFT);
+    try {
+      console.log('renderStaff():', { mode: msreCount === -1 ? 'random' : 'analysis', beatsArg: beats, currentBeats });
+      const voice = new Voice({ numBeats: beats, beatValue: 4 });
+      // Avoid strict timing errors if rounding creates tiny mismatches
+      if ((voice as any).setStrict) {
+        (voice as any).setStrict(false);
+      } else if ((voice as any).setMode && (Voice as any).Mode) {
+        (voice as any).setMode((Voice as any).Mode.SOFT);
+      }
+      voice.addTickables(notes);
+
+      const fmt = new Formatter();
+      fmt.joinVoices([voice]).preFormat();
+      const minNotesWidth = fmt.getMinTotalWidth();
+
+      vfDiv.innerHTML = '';
+      const renderer = new Renderer(vfDiv, Renderer.Backends.SVG);
+      renderer.resize(10, 140);
+      const ctx = renderer.getContext();
+
+      const leadIn = measureLead(ctx, beats);
+      const accCnt = accidentalCount(currentKeySig);
+      const heuristic = calcStaveWidth(notes, accCnt);
+      const width = Math.ceil(Math.max(heuristic, minNotesWidth + leadIn + 20));
+
+      renderer.resize(width, 140);
+      // Make SVG responsive: set viewBox and fluid size
+      const svgRoot = vfDiv.querySelector('svg');
+      if (svgRoot) {
+        svgRoot.setAttribute('viewBox', `0 0 ${width} 140`);
+        svgRoot.setAttribute('preserveAspectRatio', 'xMinYMin meet');
+        (svgRoot as SVGSVGElement).style.width = '100%';
+        (svgRoot as SVGSVGElement).style.height = 'auto';
+        (svgRoot as SVGSVGElement).style.display = 'block';
+      }
+      const stave = new Stave(10, 20, width)
+        .addClef(selectedClef)
+        .addTimeSignature(`${beats}/4`)
+        .addKeySignature(currentKeySig);
+
+      stave.setContext(ctx).draw();
+      
+      // BEFORE you format/justify the voice
+      if (useKeyOnly) {
+        // identical to your key-only fix: no glyphs at all
+        stripAccidentalsFromNotes(notes);
+      } else if (!allowNaturals) {
+        // SAME IDEA as key-only: don't let VexFlow auto anything.
+        // We add only sharps/flats that are explicitly part of the note text.
+        stripAccidentalsFromNotes(notes);
+        addAccidentalsFromKeys(notes);
+      } else {
+        // Normal behavior when naturals are allowed
+        Accidental.applyAccidentals([voice], currentKeySig);
+      }
+
+      new Formatter().joinVoices([voice]).formatToStave([voice], stave);
+      voice.draw(ctx, stave);
+
+      const beams = Beam.generateBeams(notes);
+      hideFlagsForBeamedNotes(beams as any);
+      beams.forEach(b => b.setContext(ctx).draw());
+    } catch (error) {
+      console.error('Error rendering staff:', error);
+      // Fallback: try to render a simple version
+      try {
+        vfDiv.innerHTML = '<div style="padding: 2rem; text-align: center; color: #666;">Error rendering staff. Please try generating a new one.</div>';
+      } catch (fallbackError) {
+        console.error('Fallback rendering also failed:', fallbackError);
+      }
     }
-    voice.addTickables(notes);
-
-    const fmt = new Formatter();
-    fmt.joinVoices([voice]).preFormat();
-    const minNotesWidth = fmt.getMinTotalWidth();
-
-    vfDiv.innerHTML = '';
-    const renderer = new Renderer(vfDiv, Renderer.Backends.SVG);
-    renderer.resize(10, 140);
-    const ctx = renderer.getContext();
-
-    const leadIn = measureLead(ctx, beats);
-    const accCnt = accidentalCount(currentKeySig);
-    const heuristic = calcStaveWidth(notes, accCnt);
-    const width = Math.ceil(Math.max(heuristic, minNotesWidth + leadIn + 20));
-
-    renderer.resize(width, 140);
-    // Make SVG responsive: set viewBox and fluid size
-    const svgRoot = vfDiv.querySelector('svg');
-    if (svgRoot) {
-      svgRoot.setAttribute('viewBox', `0 0 ${width} 140`);
-      svgRoot.setAttribute('preserveAspectRatio', 'xMinYMin meet');
-      (svgRoot as SVGSVGElement).style.width = '100%';
-      (svgRoot as SVGSVGElement).style.height = 'auto';
-      (svgRoot as SVGSVGElement).style.display = 'block';
-    }
-    const stave = new Stave(10, 20, width)
-      .addClef(selectedClef)
-      .addTimeSignature(`${beats}/4`)
-      .addKeySignature(currentKeySig);
-
-    stave.setContext(ctx).draw();
-        // BEFORE you format/justify the voice
-if (useKeyOnly) {
-  // identical to your key-only fix: no glyphs at all
-  stripAccidentalsFromNotes(notes);
-} else if (!allowNaturals) {
-  // SAME IDEA as key-only: don't let VexFlow auto anything.
-  // We add only sharps/flats that are explicitly part of the note text.
-  stripAccidentalsFromNotes(notes);
-  addAccidentalsFromKeys(notes);
-} else {
-  // Normal behavior when naturals are allowed
-  Accidental.applyAccidentals([voice], currentKeySig);
-}
-
-
-    new Formatter().joinVoices([voice]).formatToStave([voice], stave);
-    voice.draw(ctx, stave);
-
-    const beams = Beam.generateBeams(notes);
-    hideFlagsForBeamedNotes(beams as any);
-    beams.forEach(b => b.setContext(ctx).draw());
   }
 
   const NOTE_LETTERS = ['c','d','e','f','g','a','b'];
@@ -1189,6 +1210,101 @@ function hideFlagsForBeamedNotes(beams: any[]) {
   }
 }
 
+// Piano keyboard integration
+function handlePianoNote(note: string, frequency: number) {
+  console.log('🎹 Piano key clicked:', note);
+  
+  // The piano sends just the note name (C, D#, etc.) without octave
+  // We need to match this against the target note regardless of octave
+  
+  // Update the display to show the piano note was played
+  freq = Math.round(frequency);
+  lastGoodFreq = frequency;
+  lastHeard = Date.now();
+  lastUpdate = lastHeard;
+  
+  // Extract the note name from the target (e.g., "C4" -> "C", "D#5" -> "D#")
+  const targetNoteName = line[i]?.replace(/\d+$/, '') || '';
+  console.log('🎯 Target note:', line[i], '→ extracted:', targetNoteName);
+  
+  // Normalize note names for comparison (handle both # and ♯ symbols)
+  const normalizeNote = (noteStr: string) => noteStr.replace('♯', '#').replace('♭', 'b');
+  
+  // Handle enharmonic equivalents (A# = Bb, C# = Db, etc.)
+  const getEnharmonicEquivalents = (noteStr: string) => {
+    const equivalents: Record<string, string[]> = {
+      'A#': ['Bb', 'A#'],
+      'Bb': ['Bb', 'A#'],
+      'C#': ['C#', 'Db'],
+      'Db': ['C#', 'Db'],
+      'D#': ['D#', 'Eb'],
+      'Eb': ['D#', 'Eb'],
+      'F#': ['F#', 'Gb'],
+      'Gb': ['F#', 'Gb'],
+      'G#': ['G#', 'Ab'],
+      'Ab': ['G#', 'Ab']
+    };
+    return equivalents[noteStr] || [noteStr];
+  };
+  
+  const normalizedPianoNote = normalizeNote(note);
+  const normalizedTargetNote = normalizeNote(targetNoteName);
+  const pianoEquivalents = getEnharmonicEquivalents(normalizedPianoNote);
+  const targetEquivalents = getEnharmonicEquivalents(normalizedTargetNote);
+  
+  console.log('🔄 Comparing:', normalizedPianoNote, 'vs', normalizedTargetNote);
+  console.log('🎵 Piano equivalents:', pianoEquivalents, 'Target equivalents:', targetEquivalents);
+  
+  // Check if the piano note matches the target note name (ignoring octave)
+  // Also check enharmonic equivalents
+  const isMatch = pianoEquivalents.some(p => targetEquivalents.includes(p));
+  if (isMatch) {
+    const matchedIndex = i;
+    const matchedLabel = line[matchedIndex] || '';
+    gaEvent('correct_note', {
+      index: matchedIndex,
+      label: matchedLabel,
+      clef: selectedClef,
+      key: currentKeySig
+    });
+    
+    // Mark the note as green
+    markNoteGreen(notes[i]);
+    
+    // Update state
+    matchedFreq = freq;
+    lastNoteTime = Date.now();
+    i++;
+    
+    // Re-render the staff to show the green note
+    renderStaff(currentBeats);
+    
+    if (i === notes.length) {
+      if (msreCount == -1) {
+        generateRandomLine();
+        gate = 'WAIT_ATTACK';
+        haveGoneQuiet = false;
+        matchedFreq = 0;
+        i = 0;
+        deferNextFrame = true;
+      } else {
+        if (msreCount == totalMsre - 1) {
+          // Song complete
+        } else {
+          msreCount++;
+          renderAnalysisLine();
+          gate = 'WAIT_ATTACK';
+          haveGoneQuiet = false;
+          matchedFreq = 0;
+          i = 0;
+          deferNextFrame = true;
+        }
+      }
+    }
+    gate = 'WAIT_NEXT';
+  }
+}
+
 </script>
 
 <div class="main-container">
@@ -1364,14 +1480,28 @@ function hideFlagsForBeamedNotes(beams: any[]) {
 
   <!-- Pitch Detection Display -->
   <section class="pitch-display">
-    {#if !micEnabled}
-      <div class="mic-permission">
-        <button class="mic-button" on:click={enableMic}>Enable Microphone</button>
-        {#if micError}
-          <div class="mic-error">{micError}</div>
-        {/if}
+    <div class="pitch-controls">
+      {#if !micEnabled}
+        <div class="mic-permission">
+          <button class="mic-button" on:click={enableMic}>Enable Microphone</button>
+          {#if micError}
+            <div class="mic-error">{micError}</div>
+          {/if}
+        </div>
+      {/if}
+      
+      <div class="piano-toggle">
+        <button 
+          class="piano-toggle-button"
+          class:active={pianoKeyboardVisible}
+          on:click={() => pianoKeyboardVisible = !pianoKeyboardVisible}
+        >
+          <span class="piano-icon">🎹</span>
+          {pianoKeyboardVisible ? 'Hide Piano' : 'Show Piano'}
+        </button>
       </div>
-    {/if}
+    </div>
+    
     <div class="pitch-info">
       <div class="frequency-display">
         <span class="frequency-value">{freq || '--'}</span>
@@ -1495,6 +1625,14 @@ function hideFlagsForBeamedNotes(beams: any[]) {
       </div>
     </div>
   </section>
+
+  <!-- Piano Keyboard -->
+  <PianoKeyboard 
+    bind:visible={pianoKeyboardVisible}
+    currentClef={selectedClef}
+    {currentKeySig}
+    on:notePlayed={({ detail }) => handlePianoNote(detail.note, detail.frequency)}
+  />
 </div>
 
 <style>
@@ -1798,6 +1936,51 @@ function hideFlagsForBeamedNotes(beams: any[]) {
   }
   .mic-button:hover { transform: translateY(-2px); box-shadow: 0 8px 25px rgba(102,126,234,0.3); }
   .mic-error { color: #b91c1c; font-size: 0.9rem; }
+
+  .pitch-controls {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1.5rem;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+
+  .piano-toggle {
+    display: flex;
+    align-items: center;
+  }
+
+  .piano-toggle-button {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1.5rem;
+    background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+    color: white;
+    border: none;
+    border-radius: 0.75rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+
+  .piano-toggle-button:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(16, 185, 129, 0.3);
+  }
+
+  .piano-toggle-button.active {
+    background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+  }
+
+  .piano-toggle-button.active:hover {
+    box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
+  }
+
+  .piano-icon {
+    font-size: 1.2rem;
+  }
 
   .pitch-info {
     text-align: center;
@@ -2106,6 +2289,16 @@ function hideFlagsForBeamedNotes(beams: any[]) {
     
     .volume-slider {
       width: 250px;
+    }
+    
+    .pitch-controls {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 1rem;
+    }
+    
+    .piano-toggle {
+      justify-content: center;
     }
   }
 
