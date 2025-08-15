@@ -1216,7 +1216,7 @@ function handlePianoNote(note: string, frequency: number) {
   
   // The piano sends just the note name (C, D#, etc.) without octave
   // We need to match this against the target note regardless of octave
-  gaEvent('piano key pressed', {note});
+  //gaEvent('piano key pressed', {note});
   // Update the display to show the piano note was played
   freq = Math.round(frequency);
   lastGoodFreq = frequency;
