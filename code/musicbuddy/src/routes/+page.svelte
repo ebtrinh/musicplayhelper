@@ -1230,7 +1230,7 @@ function handlePianoNote(note: string, frequency: number) {
   // Normalize note names for comparison (handle both # and ♯ symbols)
   const normalizeNote = (noteStr: string) => noteStr.replace('♯', '#').replace('♭', 'b');
   
-  // Handle enharmonic equivalents (A# = Bb, C# = Db, etc.)
+  // Handle enharmonic equivalents (A# = Bb, C# = Db, E# = F, B# = C, etc.)
   const getEnharmonicEquivalents = (noteStr: string) => {
     const equivalents: Record<string, string[]> = {
       'A#': ['Bb', 'A#'],
@@ -1242,7 +1242,16 @@ function handlePianoNote(note: string, frequency: number) {
       'F#': ['F#', 'Gb'],
       'Gb': ['F#', 'Gb'],
       'G#': ['G#', 'Ab'],
-      'Ab': ['G#', 'Ab']
+      'Ab': ['G#', 'Ab'],
+      // White key enharmonics
+      'E#': ['F', 'E#'],
+      'F': ['F', 'E#'],
+      'B#': ['C', 'B#'],
+      'C': ['C', 'B#'],
+      'Cb': ['B', 'Cb'],
+      'B': ['B', 'Cb'],
+      'Fb': ['E', 'Fb'],
+      'E': ['E', 'Fb']
     };
     return equivalents[noteStr] || [noteStr];
   };
@@ -2057,6 +2066,7 @@ function handlePianoNote(note: string, frequency: number) {
     background: #e5e7eb;
     border-radius: 3px;
     outline: none;
+    appearance: none;
     -webkit-appearance: none;
   }
 
