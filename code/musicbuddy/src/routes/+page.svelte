@@ -95,6 +95,7 @@ let barLedger: Record<string, AccType> = {};
 
 
 const accFromKey = (L: string): AccType => {
+  if (!km) return 'nat'; // Safety guard for uninitialized KeyManager
   const a = km.selectNote(L).accidental as '#'|'b'|undefined;
   return a === '#' ? 'sh' : a === 'b' ? 'fl' : 'nat';
 };
@@ -1224,11 +1225,15 @@ function handlePianoNote(note: string, frequency: number) {
   lastUpdate = lastHeard;
   
   // Extract the note name from the target (e.g., "C4" -> "C", "D#5" -> "D#")
-  const targetNoteName = line[i]?.replace(/\d+$/, '') || '';
+  if (i >= line.length || !line[i]) {
+    console.log('🎹 Piano note played but no target note available');
+    return;
+  }
+  const targetNoteName = line[i].replace(/\d+$/, '') || '';
   console.log('🎯 Target note:', line[i], '→ extracted:', targetNoteName);
   
   // Normalize note names for comparison (handle both # and ♯ symbols)
-  const normalizeNote = (noteStr: string) => noteStr.replace('♯', '#').replace('♭', 'b');
+  const normalizeNote = (noteStr: string) => noteStr.replace(/♯/g, '#').replace(/♭/g, 'b');
   
   // Handle enharmonic equivalents (A# = Bb, C# = Db, E# = F, B# = C, etc.)
   const getEnharmonicEquivalents = (noteStr: string) => {
@@ -1251,7 +1256,14 @@ function handlePianoNote(note: string, frequency: number) {
       'Cb': ['B', 'Cb'],
       'B': ['B', 'Cb'],
       'Fb': ['E', 'Fb'],
-      'E': ['E', 'Fb']
+      'E': ['E', 'Fb'],
+      // Double accidentals (rare but possible)
+      'C##': ['D', 'C##'],
+      'F##': ['G', 'F##'],
+      'G##': ['A', 'G##'],
+      'Dbb': ['C', 'Dbb'],
+      'Gbb': ['F', 'Gbb'],
+      'Abb': ['G', 'Abb']
     };
     return equivalents[noteStr] || [noteStr];
   };
@@ -1330,7 +1342,10 @@ function handlePianoNote(note: string, frequency: number) {
         }
       }
     }
+    
+    // Set proper gate state to sync with microphone detection logic
     gate = 'WAIT_NEXT';
+    lastNoteTime = Date.now();
   }
 }
 

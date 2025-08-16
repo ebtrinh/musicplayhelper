@@ -5,12 +5,27 @@
     notePlayed: { note: string; frequency: number };
   }>();
 
-  // Piano key configuration - no octave association
+  // Piano key configuration
   const WHITE_KEYS = ['C', 'D', 'E', 'F', 'G', 'A', 'B'];
   const BLACK_KEYS = ['C♯', 'D♯', 'F♯', 'G♯', 'A♯'];
   
-  // Use middle C octave (C4) as the base for all notes
-  // The system will automatically match to the correct octave
+  // Map display notes to audio file names
+  const NOTE_TO_FILE: Record<string, string> = {
+    'C': 'C4.mp3',
+    'C♯': 'Db4.mp3',  // C# = Db
+    'D': 'D4.mp3',
+    'D♯': 'Eb4.mp3',  // D# = Eb
+    'E': 'E4.mp3',
+    'F': 'F4.mp3',
+    'F♯': 'Gb4.mp3',  // F# = Gb
+    'G': 'G4.mp3',
+    'G♯': 'Ab4.mp3',  // G# = Ab
+    'A': 'A4.mp3',
+    'A♯': 'Bb4.mp3',  // A# = Bb
+    'B': 'B4.mp3'
+  };
+
+  // Use middle C octave (C4) as the base for all notes - frequencies for the app logic
   const NOTE_FREQUENCIES: Record<string, number> = {
     'C': 261.63,   // C4
     'C♯': 277.18,  // C#4
@@ -20,6 +35,7 @@
     'F': 349.23,   // F4
     'F♯': 369.99,  // F#4
     'G': 392.00,   // G4
+    'G♯': 415.30,  // G#4
     'A': 440.00,   // A4
     'A♯': 466.16,  // A#4
     'B': 493.88    // B4
@@ -27,16 +43,56 @@
 
   // Props
   export let visible = false;
-  export let currentClef: 'treble' | 'bass' | 'alto' = 'treble';
-  export let currentKeySig = 'C';
+  export let currentClef: 'treble' | 'bass' | 'alto' = 'treble'; // For future use
+  export let currentKeySig = 'C'; // For future use
+  
+  // Suppress unused warnings - these props are for future functionality
+  $: void currentClef, currentKeySig;
 
   // State
   let pressedKey: string | null = null;
+  let audioElements: Record<string, HTMLAudioElement> = {};
+
+  // Preload all audio files for better performance
+  function preloadAudio() {
+    if (typeof window === 'undefined') return;
+    
+    Object.entries(NOTE_TO_FILE).forEach(([note, filename]) => {
+      const audio = new Audio(`/pianonotes/${filename}`);
+      audio.preload = 'auto';
+      audio.volume = 0.7; // Set a reasonable volume
+      audioElements[note] = audio;
+    });
+  }
+
+  // Call preload when component mounts
+  if (typeof window !== 'undefined') {
+    preloadAudio();
+  }
+
+  // Play a note using the MP3 files
+  function playNote(note: string) {
+    const audio = audioElements[note];
+    if (!audio) return;
+    
+    try {
+      // Reset to beginning and play
+      audio.currentTime = 0;
+      audio.play().catch(error => {
+        console.warn('Failed to play audio:', error);
+      });
+    } catch (error) {
+      console.warn('Error playing note:', error);
+    }
+  }
 
   function handleKeyClick(note: string) {
-    if (!NOTE_FREQUENCIES[note]) return;
+    if (!NOTE_TO_FILE[note]) return;
     
     pressedKey = note;
+    
+    // Play the note sound
+    playNote(note);
     
     // GA event for piano key pressed
     if (typeof window !== 'undefined' && (window as any).gtag) {
