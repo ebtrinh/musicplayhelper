@@ -87,6 +87,16 @@ let allowNaturals = true;
 let allowSharps   = true;
 let allowFlats    = true;
 
+  // Mode system
+  let randomSongMode = false; // false = Random Note Mode, true = Random Song Mode
+  let autoNext = false; // Controls auto-advance behavior
+  let currentSongTitle = '';
+  let currentSongComposer = '';
+  
+  // Dropdown visibility
+  let showSongDropdown = false;
+  let showNoteDropdown = false;
+
 
 
 // track the in-bar state for each letter+octave
@@ -855,13 +865,26 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
           renderStaff(currentBeats);
           if (i === notes.length){
             if (msreCount == -1){
-              generateRandomLine();
-              gate = 'WAIT_ATTACK'; haveGoneQuiet = false; matchedFreq = 0; i = 0;
-              deferNextFrame = true;
-              break;
+              // Random Note Mode completion
+              if (autoNext) {
+                generateRandomLine();
+                gate = 'WAIT_ATTACK'; haveGoneQuiet = false; matchedFreq = 0; i = 0;
+                deferNextFrame = true;
+                break;
+              }
+              // Auto-next off - just stop and wait for user action
             } else {
               if (msreCount == totalMsre-1){
                 // Song complete
+                if (autoNext && randomSongMode) {
+                  // Auto-advance to next song in Random Song Mode with Auto-Next ON
+                  nextRandomSong().then(() => {
+                    gate = 'WAIT_ATTACK'; haveGoneQuiet = false; matchedFreq = 0; i = 0;
+                    deferNextFrame = true;
+                  });
+                  break;
+                }
+                // Auto-next off - just stop and wait for user action
               } else {
                 msreCount++;
                 renderAnalysisLine();
@@ -1044,16 +1067,76 @@ if (svgRoot2) {
 
   /* ---------- Preset songs ---------- */
   const songs = [
-    "Hot Cross Buns",  
-    "Ode to Joy",
-    "Mary Had a Little Lamb",
-    "Twinkle Twinkle Little Star",
-    "Baa Baa Black Sheep",
-    "Row, Row, Row Your Boat"
+    { name: "Hot Cross Buns", composer: "Traditional", difficulty: 1 },
+    { name: "Mary Had a Little Lamb", composer: "Traditional", difficulty: 1 },
+    { name: "Twinkle Twinkle Little Star", composer: "Traditional", difficulty: 2 },
+    { name: "Baa Baa Black Sheep", composer: "Traditional", difficulty: 2 },
+    { name: "Row, Row, Row Your Boat", composer: "Traditional", difficulty: 2 },
+    { name: "Ode to Joy", composer: "Ludwig van Beethoven", difficulty: 3 }
   ];
-  function setSongFromName(name:string) {
+
+  function setSongFromName(name: string) {
     gaEvent('preset_song_click', { name });
     setSong(name.toLowerCase().replace(/ /g, "-"), true);
+  }
+
+  function getRandomSong() {
+    return songs[Math.floor(Math.random() * songs.length)];
+  }
+
+  async function startRandomSongMode() {
+    randomSongMode = true;
+    showSongDropdown = true;
+    showNoteDropdown = false;
+    const randomSong = getRandomSong();
+    currentSongTitle = randomSong.name;
+    currentSongComposer = randomSong.composer;
+    gaEvent('random_song_mode_started', { song: randomSong.name });
+    await setSong(randomSong.name.toLowerCase().replace(/ /g, "-"), true);
+  }
+
+  async function nextRandomSong() {
+    const randomSong = getRandomSong();
+    currentSongTitle = randomSong.name;
+    currentSongComposer = randomSong.composer;
+    gaEvent('next_random_song', { song: randomSong.name });
+    await setSong(randomSong.name.toLowerCase().replace(/ /g, "-"), true);
+  }
+
+  function switchToRandomNoteMode() {
+    randomSongMode = false;
+    showNoteDropdown = true;
+    showSongDropdown = false;
+    currentSongTitle = '';
+    currentSongComposer = '';
+    gaEvent('random_note_mode');
+    generateRandomLine();
+  }
+
+  function toggleSongDropdown() {
+    if (randomSongMode) {
+      // Already in song mode, just toggle dropdown
+      showSongDropdown = !showSongDropdown;
+    } else {
+      // Switch to song mode and show dropdown
+      startRandomSongMode();
+    }
+  }
+
+  function toggleNoteDropdown() {
+    if (!randomSongMode) {
+      // Already in note mode, just toggle dropdown
+      showNoteDropdown = !showNoteDropdown;
+    } else {
+      // Switch to note mode and show dropdown
+      switchToRandomNoteMode();
+    }
+  }
+
+  async function resetCurrentSong() {
+    if (!randomSongMode || !currentSongTitle) return;
+    gaEvent('reset_song', { song: currentSongTitle });
+    await setSong(currentSongTitle.toLowerCase().replace(/ /g, "-"), true);
   }
 
 
@@ -1071,6 +1154,8 @@ type Prefs = {
   allowFlats?: boolean;
   bpm?: number;
   minDb?: number;
+  randomSongMode?: boolean;
+  autoNext?: boolean;
 };
 
 function getCurrentPrefs(): Prefs {
@@ -1085,7 +1170,9 @@ function getCurrentPrefs(): Prefs {
     allowSharps,
     allowFlats,
     bpm,
-    minDb
+    minDb,
+    randomSongMode,
+    autoNext
   };
 }
 
@@ -1105,6 +1192,8 @@ function applyPrefs(p: Prefs) {
 
   if (typeof p.bpm === 'number')  bpm  = p.bpm;
   if (typeof p.minDb === 'number') minDb = p.minDb;
+  if (typeof p.randomSongMode === 'boolean') randomSongMode = p.randomSongMode;
+  if (typeof p.autoNext === 'boolean') autoNext = p.autoNext;
 
   // after applying prefs, regenerate the random staff so UI reflects them
   generateRandomLine();
@@ -1174,7 +1263,7 @@ $: if (prefsLoaded) {
   void selectedClef, selectedKeySig, selectedTS,
        enableHalves, enableEighths,
        useKeyOnly, allowNaturals, allowSharps, allowFlats,
-       bpm, minDb;
+       bpm, minDb, randomSongMode, autoNext;
   schedulePrefsSave();
 }
 
@@ -1331,6 +1420,17 @@ function handlePianoNote(note: string, frequency: number) {
       } else {
         if (msreCount == totalMsre - 1) {
           // Song complete
+          if (autoNext && randomSongMode) {
+            // Auto-advance to next song in Random Song Mode with Auto-Next ON
+            nextRandomSong().then(() => {
+              gate = 'WAIT_ATTACK';
+              haveGoneQuiet = false;
+              matchedFreq = 0;
+              i = 0;
+              deferNextFrame = true;
+            });
+          }
+          // Flow mode off - just stop and wait for user action
         } else {
           msreCount++;
           renderAnalysisLine();
@@ -1382,123 +1482,176 @@ function handlePianoNote(note: string, frequency: number) {
     {/if}
   </section>
 
-  <!-- Control Panel Section -->
-  <section class="control-panel">
-    <div class="control-grid">
-      <!-- Clef and Key Selection -->
-      <div class="control-group">
-        <label class="control-label">
-          <span>Clef:</span>
-          <select bind:value={selectedClef} on:change={clefchanged} class="control-select">
-            {#each CLEFS as c}
-              <option value={c}>{c.charAt(0).toUpperCase() + c.slice(1)}</option>
-            {/each}
-          </select>
-        </label>
+  <!-- Mode Selection -->
+  <section class="mode-selection">
+    <div class="mode-buttons">
+      <!-- Random Song Mode Button -->
+      <div class="mode-dropdown" class:active={randomSongMode && showSongDropdown}>
+        <button 
+          class="mode-button" 
+          class:active={randomSongMode}
+          on:click={toggleSongDropdown}
+        >
+          <span class="mode-icon">🎵</span>
+          Random Song Mode
+          <span class="dropdown-arrow">▼</span>
+        </button>
         
-        <label class="control-label">
-          <span>Key Signature:</span>
-          <select
-            bind:value={selectedKeySig}
-            on:change={generateRandomLine}
-            class="control-select"
-          >
-            {#each KEY_SIGS as ks}
-              <option value={ks.value}>{ks.label}</option>
-            {/each}
-          </select>
-        </label>
+        {#if randomSongMode && showSongDropdown}
+          <div class="dropdown-content">
+            <label class="dropdown-control">
+              <span>Clef:</span>
+              <select bind:value={selectedClef} on:change={clefchanged} class="dropdown-select">
+                {#each CLEFS as c}
+                  <option value={c}>{c.charAt(0).toUpperCase() + c.slice(1)}</option>
+                {/each}
+              </select>
+            </label>
+            
+            <label class="dropdown-toggle">
+              <span>Auto-Next</span>
+              <button
+                type="button"
+                class="toggle-switch"
+                class:active={autoNext}
+                on:click={() => { autoNext = !autoNext; }}
+                aria-pressed={autoNext}
+                aria-label="Toggle auto-next mode"
+              >
+                <span class="toggle-slider"></span>
+              </button>
+            </label>
+          </div>
+        {/if}
       </div>
 
-      <!-- Duration Toggles -->
-      <div class="control-group">
-        <div class="toggle-group">
-          <label class="toggle-label">
-            <span>Half notes</span>
-            <button
-              type="button"
-              aria-label="Toggle half notes on or off"
-              class="toggle-switch"
-              class:active={enableHalves}
-              on:click={() => { enableHalves = !enableHalves; generateRandomLine(); }}
-              aria-pressed={enableHalves}
-            >
-              <span class="toggle-slider"></span>
-            </button>
-          </label>
-
-          <label class="toggle-label">
-            <span>Eighth notes</span>
-            <button
-              type="button"
-              aria-label="Toggle eighth notes on or off"
-              class="toggle-switch"
-              class:active={enableEighths}
-              on:click={() => { enableEighths = !enableEighths; generateRandomLine(); }}
-              aria-pressed={enableEighths}
-            >
-              <span class="toggle-slider"></span>
-            </button>
-          </label>
-
-          <label class="toggle-label">
-            <span>Key-only notes</span>
-            <button
-              type="button"
-              aria-label="Toggle key-only notes on or off"
-              class="toggle-switch"
-              class:active={useKeyOnly}
-              on:click={() => { useKeyOnly = !useKeyOnly; generateRandomLine(); }}
-              aria-pressed={useKeyOnly}
-            >
-              <span class="toggle-slider"></span>
-            </button>
-          </label>
-        </div>
-
-        {#if !useKeyOnly}
-          <div class="accidental-toggles">
-            <label class="toggle-label small">
-              <span>Naturals</span>
-              <button
-                type="button"
-                aria-label="Toggle natural accidentals"
-                class="toggle-switch small"
-                class:active={allowNaturals}
-                on:click={() => { allowNaturals = !allowNaturals; generateRandomLine(); }}
-                aria-pressed={allowNaturals}
+      <!-- Random Note Mode Button -->
+      <div class="mode-dropdown" class:active={!randomSongMode && showNoteDropdown}>
+        <button 
+          class="mode-button" 
+          class:active={!randomSongMode}
+          on:click={toggleNoteDropdown}
+        >
+          <span class="mode-icon">🎼</span>
+          Random Note Mode
+          <span class="dropdown-arrow">▼</span>
+        </button>
+        
+        {#if !randomSongMode && showNoteDropdown}
+          <div class="dropdown-content">
+            <label class="dropdown-control">
+              <span>Clef:</span>
+              <select bind:value={selectedClef} on:change={clefchanged} class="dropdown-select">
+                {#each CLEFS as c}
+                  <option value={c}>{c.charAt(0).toUpperCase() + c.slice(1)}</option>
+                {/each}
+              </select>
+            </label>
+            
+            <label class="dropdown-control">
+              <span>Key Signature:</span>
+              <select
+                bind:value={selectedKeySig}
+                on:change={generateRandomLine}
+                class="dropdown-select"
               >
-                <span class="toggle-slider"></span>
-              </button>
+                {#each KEY_SIGS as ks}
+                  <option value={ks.value}>{ks.label}</option>
+                {/each}
+              </select>
             </label>
 
-            <label class="toggle-label small">
-              <span>Sharps</span>
-              <button
-                type="button"
-                aria-label="Toggle sharp accidentals"
-                class="toggle-switch small"
-                class:active={allowSharps}
-                on:click={() => { allowSharps = !allowSharps; generateRandomLine(); }}
-                aria-pressed={allowSharps}
-              >
-                <span class="toggle-slider"></span>
-              </button>
-            </label>
+            <div class="toggle-group">
+              <label class="dropdown-toggle">
+                <span>Half notes</span>
+                <button
+                  type="button"
+                  class="toggle-switch"
+                  class:active={enableHalves}
+                  on:click={() => { enableHalves = !enableHalves; generateRandomLine(); }}
+                  aria-pressed={enableHalves}
+                  aria-label="Toggle half notes"
+                >
+                  <span class="toggle-slider"></span>
+                </button>
+              </label>
 
-            <label class="toggle-label small">
-              <span>Flats</span>
-              <button
-                type="button"
-                aria-label="Toggle flat accidentals"
-                class="toggle-switch small"
-                class:active={allowFlats}
-                on:click={() => { allowFlats = !allowFlats; generateRandomLine(); }}
-                aria-pressed={allowFlats}
-              >
-                <span class="toggle-slider"></span>
-              </button>
-            </label>
+              <label class="dropdown-toggle">
+                <span>Eighth notes</span>
+                <button
+                  type="button"
+                  class="toggle-switch"
+                  class:active={enableEighths}
+                  on:click={() => { enableEighths = !enableEighths; generateRandomLine(); }}
+                  aria-pressed={enableEighths}
+                  aria-label="Toggle eighth notes"
+                >
+                  <span class="toggle-slider"></span>
+                </button>
+              </label>
+
+              <label class="dropdown-toggle">
+                <span>Key-only notes</span>
+                <button
+                  type="button"
+                  class="toggle-switch"
+                  class:active={useKeyOnly}
+                  on:click={() => { useKeyOnly = !useKeyOnly; generateRandomLine(); }}
+                  aria-pressed={useKeyOnly}
+                  aria-label="Toggle key-only notes"
+                >
+                  <span class="toggle-slider"></span>
+                </button>
+              </label>
+
+
+            </div>
+
+            {#if !useKeyOnly}
+              <div class="accidental-toggles">
+                <div class="accidental-toggle-item">
+                  <span class="accidental-label">Naturals</span>
+                  <button
+                    type="button"
+                    class="toggle-switch small"
+                    class:active={allowNaturals}
+                    on:click={() => { allowNaturals = !allowNaturals; generateRandomLine(); }}
+                    aria-pressed={allowNaturals}
+                    aria-label="Toggle natural accidentals"
+                  >
+                    <span class="toggle-slider"></span>
+                  </button>
+                </div>
+
+                <div class="accidental-toggle-item">
+                  <span class="accidental-label">Sharps</span>
+                  <button
+                    type="button"
+                    class="toggle-switch small"
+                    class:active={allowSharps}
+                    on:click={() => { allowSharps = !allowSharps; generateRandomLine(); }}
+                    aria-pressed={allowSharps}
+                    aria-label="Toggle sharp accidentals"
+                  >
+                    <span class="toggle-slider"></span>
+                  </button>
+                </div>
+
+                <div class="accidental-toggle-item">
+                  <span class="accidental-label">Flats</span>
+                  <button
+                    type="button"
+                    class="toggle-switch small"
+                    class:active={allowFlats}
+                    on:click={() => { allowFlats = !allowFlats; generateRandomLine(); }}
+                    aria-pressed={allowFlats}
+                    aria-label="Toggle flat accidentals"
+                  >
+                    <span class="toggle-slider"></span>
+                  </button>
+                </div>
+              </div>
+            {/if}
           </div>
         {/if}
       </div>
@@ -1507,18 +1660,38 @@ function handlePianoNote(note: string, frequency: number) {
 
   <!-- Staff Section -->
   <section class="staff-section">
-          <div class="staff-container">
-        <div bind:this={vfDiv} class="staff-display"></div>
+    {#if randomSongMode && currentSongTitle}
+      <div class="song-info">
+        <h3 class="song-title">{currentSongTitle}</h3>
+        <p class="song-composer">{currentSongComposer}</p>
+      </div>
+    {/if}
+    
+    <div class="staff-container">
+      <div bind:this={vfDiv} class="staff-display"></div>
         
-        <button on:click={
-        () => {
-          gaEvent('new_staff_click', { clef: selectedClef, key: selectedKeySig, halves: enableHalves, eighths: enableEighths, useKeyOnly, allowNaturals, allowSharps, allowFlats });
-          generateRandomLine();
-        }
-      } class="new-staff-button">
-        <span class="button-icon">🎵</span>
-        New Staff
-      </button>
+        <div class="staff-buttons">
+          <button on:click={
+            () => {
+              gaEvent('new_staff_click', { clef: selectedClef, key: selectedKeySig, halves: enableHalves, eighths: enableEighths, useKeyOnly, allowNaturals, allowSharps, allowFlats, randomSongMode, autoNext });
+              if (randomSongMode) {
+                nextRandomSong();
+              } else {
+                generateRandomLine();
+              }
+            }
+          } class="staff-button primary">
+            <span class="button-icon">🎵</span>
+            {randomSongMode ? 'Next Song' : 'New Staff'}
+          </button>
+
+          {#if randomSongMode && currentSongTitle}
+            <button on:click={resetCurrentSong} class="staff-button secondary">
+              <span class="button-icon">🔄</span>
+              Reset Song
+            </button>
+          {/if}
+        </div>
     </div>
   </section>
 
@@ -1626,11 +1799,11 @@ function handlePianoNote(note: string, frequency: number) {
           <div class="song-list preset-songs">
             {#each songs as song}
               <button
-                on:click={() => setSongFromName(song)}
+                on:click={() => setSongFromName(song.name)}
                 class="song-button preset"
-                aria-label={`Load preset ${song}`}
+                aria-label={`Load preset ${song.name}`}
               >
-                {song}
+                {song.name}
               </button>
             {/each}
           </div>
@@ -1781,8 +1954,8 @@ function handlePianoNote(note: string, frequency: number) {
     font-weight: 500;
   }
 
-  /* Control Panel */
-  .control-panel {
+  /* Mode Selection */
+  .mode-selection {
     background: white;
     border-radius: 1rem;
     padding: 2rem;
@@ -1791,20 +1964,78 @@ function handlePianoNote(note: string, frequency: number) {
     border: 1px solid #e5e7eb;
   }
 
-  .control-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 2rem;
-    align-items: start;
+  .mode-buttons {
+    display: flex;
+    gap: 1rem;
+    justify-content: center;
+    flex-wrap: wrap;
   }
 
-  .control-group {
+  .mode-dropdown {
+    position: relative;
+    min-width: 250px;
+  }
+
+  .mode-button {
+    width: 100%;
+    padding: 1rem 1.5rem;
+    background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+    border: 2px solid #cbd5e1;
+    border-radius: 0.75rem;
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: #1e293b;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+
+  .mode-button:hover {
+    background: linear-gradient(135deg, #f1f5f9 0%, #d6e2ea 100%);
+    border-color: #94a3b8;
+  }
+
+  .mode-button.active {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    border-color: #667eea;
+    color: white;
+    box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+  }
+
+  .mode-icon {
+    font-size: 1.2rem;
+  }
+
+  .dropdown-arrow {
+    font-size: 0.8rem;
+    transition: transform 0.2s ease;
+  }
+
+  .mode-dropdown.active .dropdown-arrow {
+    transform: rotate(180deg);
+  }
+
+  .dropdown-content {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: white;
+    border: 2px solid #e5e7eb;
+    border-radius: 0.75rem;
+    padding: 1.5rem;
+    margin-top: 0.5rem;
+    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.1);
+    z-index: 10;
     display: flex;
     flex-direction: column;
-    gap: 1.5rem;
+    gap: 1rem;
   }
 
-  .control-label {
+  .dropdown-control {
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
@@ -1812,7 +2043,7 @@ function handlePianoNote(note: string, frequency: number) {
     color: #374151;
   }
 
-  .control-select {
+  .dropdown-select {
     padding: 0.75rem;
     border: 2px solid #e5e7eb;
     border-radius: 0.5rem;
@@ -1822,34 +2053,51 @@ function handlePianoNote(note: string, frequency: number) {
     width: 100%;
   }
 
-  .control-select:focus {
+  .dropdown-select:focus {
     outline: none;
     border-color: #667eea;
   }
 
+  .dropdown-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-weight: 600;
+    color: #374151;
+    cursor: pointer;
+    padding: 0.5rem 0;
+  }
+
+
+
   .toggle-group {
     display: flex;
     flex-direction: column;
-    gap: 1rem;
+    gap: 0.5rem;
   }
 
   .accidental-toggles {
     display: flex;
     gap: 1.5rem;
-    flex-wrap: wrap;
+    justify-content: space-around;
+    margin-top: 0.5rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid #e5e7eb;
   }
 
-  .toggle-label {
+  .accidental-toggle-item {
     display: flex;
+    flex-direction: column;
     align-items: center;
-    gap: 0.75rem;
+    gap: 0.5rem;
+    flex: 1;
+  }
+
+  .accidental-label {
     font-weight: 600;
     color: #374151;
-    cursor: pointer;
-  }
-
-  .toggle-label.small {
     font-size: 0.9rem;
+    text-align: center;
   }
 
   .toggle-switch {
@@ -1907,6 +2155,30 @@ function handlePianoNote(note: string, frequency: number) {
     overflow-x: auto;
   }
 
+  .song-info {
+    text-align: center;
+    margin-bottom: 1.5rem;
+    padding: 1rem;
+    background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+    border-radius: 0.75rem;
+    border: 1px solid #cbd5e1;
+  }
+
+  .song-title {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: #1e293b;
+    margin: 0 0 0.25rem 0;
+  }
+
+  .song-composer {
+    font-size: 1rem;
+    font-weight: 500;
+    color: #64748b;
+    margin: 0;
+    font-style: italic;
+  }
+
   .staff-container {
     display: flex;
     flex-direction: column;
@@ -1927,13 +2199,18 @@ function handlePianoNote(note: string, frequency: number) {
     overflow: hidden;
   }
 
-  .new-staff-button {
+  .staff-buttons {
+    display: flex;
+    gap: 1rem;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+
+  .staff-button {
     display: flex;
     align-items: center;
     gap: 0.5rem;
     padding: 1rem 2rem;
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    color: white;
     border: none;
     border-radius: 0.75rem;
     font-size: 1.1rem;
@@ -1942,9 +2219,24 @@ function handlePianoNote(note: string, frequency: number) {
     transition: transform 0.2s ease, box-shadow 0.2s ease;
   }
 
-  .new-staff-button:hover {
+  .staff-button.primary {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+  }
+
+  .staff-button.primary:hover {
     transform: translateY(-2px);
     box-shadow: 0 8px 25px rgba(102, 126, 234, 0.3);
+  }
+
+  .staff-button.secondary {
+    background: linear-gradient(135deg, #64748b 0%, #475569 100%);
+    color: white;
+  }
+
+  .staff-button.secondary:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 25px rgba(100, 116, 139, 0.3);
   }
 
   .button-icon {
@@ -2298,12 +2590,18 @@ function handlePianoNote(note: string, frequency: number) {
 
   /* Responsive Design */
   @media (max-width: 1024px) {
-    .control-grid {
+    .song-panels {
       grid-template-columns: 1fr;
     }
     
-    .song-panels {
-      grid-template-columns: 1fr;
+    .mode-buttons {
+      flex-direction: column;
+      align-items: center;
+    }
+    
+    .mode-dropdown {
+      width: 100%;
+      max-width: 400px;
     }
   }
 
@@ -2316,12 +2614,20 @@ function handlePianoNote(note: string, frequency: number) {
       font-size: 2.5rem;
     }
     
-    .control-panel,
+    .mode-selection,
     .staff-section,
     .pitch-display,
     .metronome-section,
     .song-management {
       padding: 1.5rem;
+    }
+    
+    .accidental-toggles {
+      gap: 1rem;
+    }
+    
+    .accidental-toggle-item {
+      gap: 0.25rem;
     }
     
     .frequency-value {
@@ -2352,7 +2658,7 @@ function handlePianoNote(note: string, frequency: number) {
     .main-container { padding: 0 0.5rem; }
     .app-title { font-size: clamp(1.8rem, 9vw, 2.3rem); }
     .app-subtitle { font-size: 0.95rem; }
-    .control-panel,
+    .mode-selection,
     .staff-section,
     .pitch-display,
     .metronome-section,
