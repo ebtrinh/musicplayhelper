@@ -188,6 +188,22 @@ function normalizeBeats(b: number) {
     generateRandomLine();
   });
 
+  // Close dropdowns when clicking outside
+  onMount(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Element;
+      if (!target.closest('.mode-dropdown')) {
+        showSongDropdown = false;
+        showNoteDropdown = false;
+      }
+    };
+    document.addEventListener('click', handleClickOutside);
+    
+    return () => {
+      document.removeEventListener('click', handleClickOutside);
+    };
+  });
+
   async function signInWithEmail() {
     gaEvent('sign_in_press', { method: 'email_magic_link' });
     if (!emailInput) return alert('Enter an email first');
@@ -948,14 +964,34 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
       xmlText = userInput;
     }
     msreCount = -1;
+    // Reset transposition calculation for new song
+    songTransposition = 0;
+    songTranspositionCalculated = false;
     renderAnalysisLine();
   }
+
+  // Store the transposition decision for the entire song
+  let songTransposition = 0;
+  let songTranspositionCalculated = false;
 
   async function renderAnalysisLine() {
     if (!vfDiv) return;
     if (msreCount == -1 || measures == undefined) {
       msreCount = 0;
       await getMusicXML();
+      
+      // Calculate transposition for the ENTIRE song when first loading
+      if (selectedClef !== 'treble' && !songTranspositionCalculated) {
+        // Collect ALL notes from ALL measures to analyze the complete song
+        const allSongNotes: StaveNote[] = [];
+        for (const measure of measures) {
+          allSongNotes.push(...measure.notes);
+        }
+        
+        songTransposition = determineOptimalTransposition(allSongNotes, 'treble', selectedClef);
+        songTranspositionCalculated = true;
+        console.log(`Analyzing ENTIRE song for ${selectedClef} clef: optimal transposition ${songTransposition} octaves (based on ${allSongNotes.length} total notes)`);
+      }
     }
     if (!measures.length) return alert('Nothing parsed');
 
@@ -963,6 +999,23 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
     notes       = measures[msreCount].notes;
     currentKeySig = measures[msreCount].key.split(' ')[0];
     km          = new KeyManager(currentKeySig);
+
+    // Apply the song-wide transposition to this measure
+    if (songTransposition !== 0) {
+      notes = notes.map(note => {
+        const originalKeys = note.getKeys();
+        const transposedKeys = originalKeys.map(key => 
+          transposeNote(key, songTransposition)
+        );
+        
+        return new StaveNote({
+          keys: transposedKeys,
+          duration: note.getDuration(),
+          clef: selectedClef,
+          autoStem: true
+        });
+      });
+    }
 
     // remember previous measure first target
     prevTargetFirst = target.length ? target[0] : null;
@@ -1057,6 +1110,133 @@ if (svgRoot2) {
       await getMusicXML();
       renderAnalysisLine();
     }
+  }
+
+  // Track previous clef for transposition
+  let previousClef: Clef = selectedClef;
+  
+  // Auto-transpose function with smart octave detection
+  function analyzeNoteRange(notes: StaveNote[]): { minOctave: number, maxOctave: number, avgOctave: number } {
+    const octaves = notes.map(note => {
+      const key = note.getKeys()[0];
+      const octave = parseInt(key.split('/')[1]);
+      return octave;
+    }).filter(oct => !isNaN(oct));
+    
+    if (octaves.length === 0) return { minOctave: 4, maxOctave: 4, avgOctave: 4 };
+    
+    const minOctave = Math.min(...octaves);
+    const maxOctave = Math.max(...octaves);
+    const avgOctave = octaves.reduce((sum, oct) => sum + oct, 0) / octaves.length;
+    
+    return { minOctave, maxOctave, avgOctave };
+  }
+
+  function determineOptimalTransposition(notes: StaveNote[], fromClef: Clef, toClef: Clef): number {
+    if (fromClef === toClef) return 0;
+    
+    // Define the center line for each clef (in terms of note + octave)
+    const CLEF_CENTERS = {
+      treble: { note: 'B', octave: 4 }, // B4 is center line of treble staff
+      bass: { note: 'D', octave: 3 },   // D3 is center line of bass staff  
+      alto: { note: 'C', octave: 4 }    // C4 is center line of alto staff
+    };
+    
+    // Convert note+octave to a numerical value for distance calculation
+    function noteToNumber(noteKey: string): number {
+      const parts = noteKey.split('/');
+      if (parts.length !== 2) return 0;
+      
+      const notePart = parts[0].toLowerCase();
+      const octave = parseInt(parts[1]);
+      
+      // Convert note letter to semitone (C=0, D=2, E=4, F=5, G=7, A=9, B=11)
+      const NOTE_SEMITONES: Record<string, number> = {
+        'c': 0, 'c#': 1, 'db': 1,
+        'd': 2, 'd#': 3, 'eb': 3, 
+        'e': 4, 'fb': 4,
+        'f': 5, 'f#': 6, 'gb': 6,
+        'g': 7, 'g#': 8, 'ab': 8,
+        'a': 9, 'a#': 10, 'bb': 10,
+        'b': 11, 'cb': 11
+      };
+      
+      const semitone = NOTE_SEMITONES[notePart] || 0;
+      return octave * 12 + semitone;
+    }
+    
+    // Calculate center position for target clef
+    const center = CLEF_CENTERS[toClef];
+    const centerValue = noteToNumber(`${center.note.toLowerCase()}/${center.octave}`);
+    
+    // Test different transposition options (-2, -1, 0, +1, +2 octaves)
+    const transpositionOptions = [-2, -1, 0, 1, 2];
+    let bestTransposition = 0;
+    let bestAverageDistance = Infinity;
+    
+    for (const octaveShift of transpositionOptions) {
+      let totalDistance = 0;
+      let validNotes = 0;
+      
+      for (const note of notes) {
+        const originalKey = note.getKeys()[0];
+        const transposedKey = transposeNote(originalKey, octaveShift);
+        const noteValue = noteToNumber(transposedKey);
+        
+        if (noteValue > 0) { // Valid note
+          const distance = Math.abs(noteValue - centerValue);
+          totalDistance += distance;
+          validNotes++;
+        }
+      }
+      
+      if (validNotes > 0) {
+        const averageDistance = totalDistance / validNotes;
+        
+        if (averageDistance < bestAverageDistance) {
+          bestAverageDistance = averageDistance;
+          bestTransposition = octaveShift;
+        }
+      }
+    }
+    
+    return bestTransposition;
+  }
+
+  function transposeNote(noteKey: string, octaveShift: number): string {
+    const parts = noteKey.split('/');
+    if (parts.length === 2) {
+      const notePart = parts[0];
+      let octave = parseInt(parts[1]);
+      octave = Math.max(1, Math.min(8, octave + octaveShift));
+      return `${notePart}/${octave}`;
+    }
+    return noteKey;
+  }
+
+  // Watch for clef changes and auto-transpose if in song mode
+  $: if (selectedClef !== previousClef && randomSongMode && notes.length > 0 && measures?.length > 0) {
+    // Reset transposition calculation and recalculate for entire song
+    songTranspositionCalculated = false;
+    
+    // Collect ALL notes from ALL measures to analyze the complete song
+    const allSongNotes: StaveNote[] = [];
+    for (const measure of measures) {
+      allSongNotes.push(...measure.notes);
+    }
+    
+    const octaveShift = determineOptimalTransposition(allSongNotes, 'treble', selectedClef);
+    songTransposition = octaveShift;
+    songTranspositionCalculated = true;
+    
+    console.log(`Clef changed from ${previousClef} to ${selectedClef}, analyzing ENTIRE song: optimal transposition ${octaveShift} octaves (based on ${allSongNotes.length} total notes)`);
+    
+    // Re-render current measure with new transposition
+    renderAnalysisLine();
+    
+    previousClef = selectedClef;
+  } else {
+    previousClef = selectedClef;
   }
 
   /* ---------- Metronome ---------- */
