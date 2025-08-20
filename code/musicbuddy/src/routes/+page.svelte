@@ -1693,7 +1693,7 @@ function handlePianoNote(note: string, frequency: number) {
           on:click={toggleSongDropdown}
         >
           <span class="mode-icon">🎵</span>
-          Random Song Mode
+          Random Song Mode (WIP)
           <span class="dropdown-arrow">▼</span>
         </button>
         
