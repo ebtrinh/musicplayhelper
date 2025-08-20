@@ -18,6 +18,7 @@ export interface MeasureData {
   key: string;      // e.g. "C major"
   roman: string;    // Roman numeral or "melody"
   notes: StaveNote[]; // VexFlow tickables inside that bar
+  timeSignature?: { beats: number; beatType: number }; // e.g. { beats: 4, beatType: 4 } for 4/4
 }
 
 /*──────────────────── constants ────────────────────*/
@@ -99,20 +100,95 @@ export function parseAugmentedNet(raw:string, clef:string):MeasureData[]{
 export function parseMusicXML(xml:string, clef:string):MeasureData[]{
   const doc=new DOMParser().parseFromString(xml,'application/xml');
   const out:MeasureData[]=[]; let key='C major';
+  let divisions = 24; // Default divisions per quarter note
+  let timeSignature = { beats: 4, beatType: 4 }; // Default 4/4 time
+  
+  // Get global divisions and time signature from first measure with attributes
+  const firstMeasureWithDivisions = doc.querySelector('measure attributes divisions');
+  if (firstMeasureWithDivisions) {
+    divisions = parseInt(firstMeasureWithDivisions.textContent || '24');
+  }
+  
+  const firstTimeElement = doc.querySelector('measure time');
+  if (firstTimeElement) {
+    const beatsElement = firstTimeElement.querySelector('beats');
+    const beatTypeElement = firstTimeElement.querySelector('beat-type');
+    if (beatsElement && beatTypeElement) {
+      timeSignature = {
+        beats: parseInt(beatsElement.textContent || '4'),
+        beatType: parseInt(beatTypeElement.textContent || '4')
+      };
+    }
+  }
+  
   doc.querySelectorAll('measure').forEach((meas,i)=>{
     const num=parseInt(meas.getAttribute('number')||String(i+1));
+    
+    // Check for key signature changes
     const f=meas.querySelector('key > fifths');
     if(f){const n=+f.textContent!; const SH=['C','G','D','A','E','B','F#','C#']; const FL=['C','F','Bb','Eb','Ab','Db','Gb','Cb']; key=n>=0?`${SH[n]} major`:`${FL[-n]} major`;}
+    
+    // Check for divisions changes in this measure
+    const measDivisions = meas.querySelector('attributes > divisions');
+    if (measDivisions) {
+      divisions = parseInt(measDivisions.textContent || '24');
+    }
+    
+    // Check for time signature changes in this measure
+    const measTimeElement = meas.querySelector('time');
+    if (measTimeElement) {
+      const beatsElement = measTimeElement.querySelector('beats');
+      const beatTypeElement = measTimeElement.querySelector('beat-type');
+      if (beatsElement && beatTypeElement) {
+        timeSignature = {
+          beats: parseInt(beatsElement.textContent || '4'),
+          beatType: parseInt(beatTypeElement.textContent || '4')
+        };
+      }
+    }
+    
     const notes:Array<StaveNote>=[];
     meas.querySelectorAll('note').forEach(n=>{
       if(n.querySelector('rest')) return;
+      
       const step=n.querySelector('pitch > step')?.textContent||'C';
       const oct =n.querySelector('pitch > octave')?.textContent||'4';
       const alt =n.querySelector('pitch > alter')?.textContent;
       const acc =alt?(alt==='1'?'#':'b'):'';
-      notes.push(new StaveNote({clef,duration:'q',keys:[`${step}${acc}/${oct}`], autoStem: true}));
+      
+      // Get note duration and calculate proper note value
+      const durationElement = n.querySelector('duration');
+      const duration = durationElement ? parseInt(durationElement.textContent || '0') : divisions;
+      
+      // Handle tuplets/time-modification
+      const timeModElement = n.querySelector('time-modification');
+      let actualDuration = duration;
+      if (timeModElement) {
+        const actualNotes = parseInt(timeModElement.querySelector('actual-notes')?.textContent || '1');
+        const normalNotes = parseInt(timeModElement.querySelector('normal-notes')?.textContent || '1');
+        actualDuration = duration * normalNotes / actualNotes;
+      }
+      
+      // Convert duration to VexFlow duration string
+      let vfDuration = 'q'; // default to quarter
+      const quarterNoteDuration = divisions;
+      const ratio = actualDuration / quarterNoteDuration;
+      
+      if (ratio >= 2) {
+        vfDuration = 'h'; // half note or longer
+      } else if (ratio >= 1) {
+        vfDuration = 'q'; // quarter note
+      } else if (ratio >= 0.5) {
+        vfDuration = '8'; // eighth note
+      } else if (ratio >= 0.25) {
+        vfDuration = '16'; // sixteenth note
+      } else {
+        vfDuration = '32'; // thirty-second note or shorter
+      }
+      
+      notes.push(new StaveNote({clef,duration:vfDuration,keys:[`${step}${acc}/${oct}`], autoStem: true}));
     });
-    if(notes.length) out.push({num,key,roman:'melody',notes});
+    if(notes.length) out.push({num,key,roman:'melody',notes,timeSignature});
   });
   return out;
 }

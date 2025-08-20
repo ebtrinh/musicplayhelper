@@ -17,6 +17,7 @@
   import { supabase } from '$lib/supabaseClient';
   import Metronome from './Metronome.svelte';
   import PianoKeyboard from './PianoKeyboard.svelte';
+  import JSZip from 'jszip';
 
   const GA_ID = 'G-M8YCNKB6FZ';
 
@@ -216,71 +217,7 @@ function normalizeBeats(b: number) {
     await supabase.auth.signOut();
   }
 
-  /* ---------- Custom Songs (Supabase) ---------- */
-  type SongRow = { name: string; created_at: string };
-  let customSongs: SongRow[] = [];
-  let customName = '';
 
-  function sanitizeName(s: string) {
-    return (s || '').trim().replace(/\s+/g, '-').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64);
-  }
-
-  export async function loadCustomSongs() {
-    const { data: userData } = await supabase.auth.getUser();
-    if (!userData.user) { customSongs = []; return; }
-    const { data, error } = await supabase
-      .from('songs')
-      .select('name, created_at')
-      .order('created_at', { ascending: false });
-    if (error) {
-      console.error('loadCustomSongs error:', error.message);
-      return;
-    }
-    customSongs = data ?? [];
-  }
-
-  async function saveCustom() {
-    if (!userEmail) return alert('Sign in first.');
-    const name = sanitizeName(customName);
-    const xml = (userInput || '').trim();
-    if (!name || !xml) return alert('Name and XML required.');
-
-    const { data: usr } = await supabase.auth.getUser();
-    const { error } = await supabase
-      .from('songs')
-      .upsert(
-        { user_id: usr.user?.id, name, xml },
-        { onConflict: 'user_id,name' }
-      );
-
-    if (error) return alert(error.message);
-    customName = '';
-    gaEvent('custom_song_saved', { name });
-    await loadCustomSongs();
-  }
-
-  async function openCustom(name: string) {
-    const { data, error } = await supabase
-      .from('songs')
-      .select('xml')
-      .eq('name', name)
-      .single();
-    if (error) return alert('Not found');
-    userInput = data!.xml;
-    await setSong('', false); // render via your existing path
-  }
-
-  async function deleteCustom(name: string) {
-    const { error } = await supabase.from('songs').delete().eq('name', name);
-    if (error) return alert(error.message);
-    await loadCustomSongs();
-  }
-
-  // keep the list in sync with auth
-  onMount(() => loadCustomSongs());
-  supabase.auth.onAuthStateChange((_e, s) => {
-    if (s?.user) loadCustomSongs(); else customSongs = [];
-  });
 
   /* ---------- audio/pitch ---------- */
   const MEASURE_BEATS = 4;       // 4/4
@@ -945,30 +882,7 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
     raf = requestAnimationFrame(tick);
   }
 
-  /* ─── analysis / XML rendering ───────────────────── */
-  let userInput = '';
-  let analysisTxt = ``;
-  let xmlText:string = '';
-  let measures: any;
 
-  function getMusicXML() {
-    measures = parseMusicXML(xmlText, selectedClef);
-  }
-
-  async function setSong(song:string, preset:boolean){
-    if (preset){
-      const filed = '/scores/' + song + '.musicxml';
-      analysisTxt = filed;
-      xmlText  = await fetch(analysisTxt).then(r => r.text());
-    } else {
-      xmlText = userInput;
-    }
-    msreCount = -1;
-    // Reset transposition calculation for new song
-    songTransposition = 0;
-    songTranspositionCalculated = false;
-    renderAnalysisLine();
-  }
 
   // Store the transposition decision for the entire song
   let songTransposition = 0;
@@ -1032,11 +946,24 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
     }
 
     // --- ADAPT THE VOICE & STAVE TO TRUE DURATION ---
-const beatsFloat = beatsFromNotes(notes);   // sum from the durations you parsed
-const beats      = normalizeBeats(beatsFloat);
-const beatValue  = 4;                       // draw as /4 (you can switch to XML time if you like)
-currentBeats = beats;
-console.log('renderAnalysisLine(): set currentBeats from analysis', { msreCount, beats });
+    // Use time signature from MusicXML if available, otherwise calculate from notes
+    const currentMeasure = measures[msreCount];
+    let beats: number;
+    let beatValue: number;
+    
+    if (currentMeasure.timeSignature) {
+      beats = currentMeasure.timeSignature.beats;
+      beatValue = currentMeasure.timeSignature.beatType;
+      console.log('renderAnalysisLine(): using time signature from MusicXML', { beats, beatValue, msreCount });
+    } else {
+      // Fallback to calculating from note durations
+      const beatsFloat = beatsFromNotes(notes);
+      beats = normalizeBeats(beatsFloat);
+      beatValue = 4;
+      console.log('renderAnalysisLine(): calculated beats from note durations', { beats, beatValue, msreCount });
+    }
+    
+    currentBeats = beats;
 
 // Build the voice to match what will actually be drawn
 const voice = new Voice({ numBeats: beats, beatValue });
@@ -1245,42 +1172,130 @@ if (svgRoot2) {
   // ... existing code ...
 
 
-  /* ---------- Preset songs ---------- */
-  const songs = [
-    { name: "Hot Cross Buns", composer: "Traditional", difficulty: 1 },
-    { name: "Mary Had a Little Lamb", composer: "Traditional", difficulty: 1 },
-    { name: "Twinkle Twinkle Little Star", composer: "Traditional", difficulty: 2 },
-    { name: "Baa Baa Black Sheep", composer: "Traditional", difficulty: 2 },
-    { name: "Row, Row, Row Your Boat", composer: "Traditional", difficulty: 2 },
-    { name: "Ode to Joy", composer: "Ludwig van Beethoven", difficulty: 3 }
-  ];
+  /* ---------- Random Song Mode - Database Integration ---------- */
+  let xmlText:string = '';
+  let measures: any;
 
-  function setSongFromName(name: string) {
-    gaEvent('preset_song_click', { name });
-    setSong(name.toLowerCase().replace(/ /g, "-"), true);
+  function getMusicXML() {
+    measures = parseMusicXML(xmlText, selectedClef);
   }
 
-  function getRandomSong() {
-    return songs[Math.floor(Math.random() * songs.length)];
+  // Extract title and composer from MusicXML
+  function extractMetaFromMusicXML(xml: string): { title: string; composer: string } {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(xml, 'application/xml');
+
+    // If the XML failed to parse, bail gracefully
+    if (doc.getElementsByTagName('parsererror').length) {
+      return { title: '(Untitled)', composer: '' };
+    }
+
+    // Helper: first node text by XPath, ignoring namespaces via local-name()
+    const xp = (expr: string): string | null => {
+      const r = doc.evaluate(
+        expr,
+        doc,
+        null,
+        XPathResult.STRING_TYPE,
+        null
+      ) as XPathResult;
+      const s = (r.stringValue || '').trim();
+      return s.length ? s : null;
+    };
+
+    // Title candidates (order of preference)
+    const title =
+      xp("normalize-space(//*[local-name()='score-partwise']/*[local-name()='work']/*[local-name()='work-title'])") ||
+      xp("normalize-space(//*[local-name()='score-timewise']/*[local-name()='work']/*[local-name()='work-title'])") ||
+      xp("normalize-space(//*[local-name()='score-partwise']/*[local-name()='movement-title'])") ||
+      xp("normalize-space(//*[local-name()='score-timewise']/*[local-name()='movement-title'])") ||
+      // Credits block: credit[credit-type='title']/credit-words
+      xp("normalize-space(//*[local-name()='credit'][*[local-name()='credit-type' and translate(text(),'TITLE','title')='title']]/*[local-name()='credit-words'][1])") ||
+      // Fallback: pick the longest credit-words string
+      (() => {
+        const iter = doc.evaluate(
+          "//*[local-name()='credit-words']",
+          doc, null, XPathResult.ORDERED_NODE_ITERATOR_TYPE, null
+        );
+        let node: Node | null, best = '';
+        while ((node = iter.iterateNext())) {
+          const t = (node.textContent || '').trim();
+          if (t.length > best.length) best = t;
+        }
+        return best || null;
+      })() ||
+      '(Untitled)';
+
+    // Composer candidates
+    const composer =
+      // identification -> creator[type='composer']
+      xp("normalize-space(//*[local-name()='identification']/*[local-name()='creator'][translate(@type,'COMPOSER','composer')='composer'])") ||
+      // any creator if only one present
+      xp("normalize-space((//*[local-name()='identification']/*[local-name()='creator'])[1])") ||
+      // credits: credit[credit-type='composer']/credit-words
+      xp("normalize-space(//*[local-name()='credit'][*[local-name()='credit-type' and translate(text(),'COMPOSER','composer')='composer']]/*[local-name()='credit-words'][1])") ||
+      '';
+
+    return { title, composer };
+  }
+
+  // helper: get one random row from xml_pool
+  async function fetchRandomXMLFromPool() {
+    // 1) ask only for the count (no data yet)
+    const { count, error: countErr } = await supabase
+      .from('xml_pool')
+      .select('*', { count: 'exact', head: true });
+    if (countErr) throw countErr;
+    if (!count || count <= 0) throw new Error('No MusicXML in xml_pool yet');
+
+    // 2) pick a random offset
+    const offset = Math.floor(Math.random() * count);
+
+    // 3) fetch exactly that row
+    const { data, error } = await supabase
+      .from('xml_pool')
+      .select('musicxml')
+      .range(offset, offset); // 1 row at the offset
+    if (error) throw error;
+
+    return data![0]; // { musicxml }
   }
 
   async function startRandomSongMode() {
     randomSongMode = true;
     showSongDropdown = true;
     showNoteDropdown = false;
-    const randomSong = getRandomSong();
-    currentSongTitle = randomSong.name;
-    currentSongComposer = randomSong.composer;
-    gaEvent('random_song_mode_started', { song: randomSong.name });
-    await setSong(randomSong.name.toLowerCase().replace(/ /g, "-"), true);
+
+    const row = await fetchRandomXMLFromPool();
+    xmlText = row.musicxml;
+
+    // ⬇️ NEW: derive title/composer from the XML itself
+    const meta = extractMetaFromMusicXML(xmlText);
+    currentSongTitle = meta.title || '(Untitled)';
+    currentSongComposer = meta.composer || '';
+
+    msreCount = -1;
+    songTransposition = 0;
+    songTranspositionCalculated = false;
+
+    renderAnalysisLine();
+    gaEvent('random_song_mode_started', { source: 'xml_pool' });
   }
 
   async function nextRandomSong() {
-    const randomSong = getRandomSong();
-    currentSongTitle = randomSong.name;
-    currentSongComposer = randomSong.composer;
-    gaEvent('next_random_song', { song: randomSong.name });
-    await setSong(randomSong.name.toLowerCase().replace(/ /g, "-"), true);
+    const row = await fetchRandomXMLFromPool();
+    xmlText = row.musicxml;
+
+    const meta = extractMetaFromMusicXML(xmlText);
+    currentSongTitle = meta.title || '(Untitled)';
+    currentSongComposer = meta.composer || '';
+
+    msreCount = -1;
+    songTransposition = 0;
+    songTranspositionCalculated = false;
+
+    renderAnalysisLine();
+    gaEvent('next_random_song', { source: 'xml_pool' });
   }
 
   function switchToRandomNoteMode() {
@@ -1314,9 +1329,14 @@ if (svgRoot2) {
   }
 
   async function resetCurrentSong() {
-    if (!randomSongMode || !currentSongTitle) return;
+    if (!randomSongMode) return;
     gaEvent('reset_song', { song: currentSongTitle });
-    await setSong(currentSongTitle.toLowerCase().replace(/ /g, "-"), true);
+    
+    // Reset the current song by restarting from the beginning
+    msreCount = -1;
+    songTransposition = 0;
+    songTranspositionCalculated = false;
+    renderAnalysisLine();
   }
 
 
@@ -1930,98 +1950,7 @@ function handlePianoNote(note: string, frequency: number) {
     <Metronome {ctx} bind:bpm />
   </section>
 
-  <!-- Song Management Section -->
-  <section class="song-management">
-    <div class="song-panels">
-      <!-- Left Panel: Custom Input -->
-      <div class="song-panel">
-        <h3 class="panel-title">Custom MusicXML</h3>
-        <textarea
-          bind:value={userInput}
-          rows="6"
-          class="xml-input"
-          placeholder="Paste MusicXML here…"
-        ></textarea>
-        
-        <div class="input-controls">
-          <input
-            class="song-name-input"
-            placeholder="Song name (letters/numbers/-/_)"
-            bind:value={customName}
-            aria-label="Custom song name"
-          />
-          <div class="input-buttons">
-            <button
-              on:click={() => setSong('', false)}
-              class="action-button render"
-            >
-              Render
-            </button>
-            <button
-              on:click={saveCustom}
-              class="action-button save"
-              disabled={!userEmail}
-              aria-disabled={!userEmail}
-            >
-              {userEmail ? 'Save' : 'Sign in to Save'}
-            </button>
-          </div>
-        </div>
-      </div>
-      
-      <!-- Right Panel: Song Library -->
-      <div class="song-panel">
-        <h3 class="panel-title">Song Library</h3>
-        
-        <!-- Preset Songs -->
-        <div class="song-category">
-          <h4 class="category-title">Preset Songs</h4>
-          <div class="song-list preset-songs">
-            {#each songs as song}
-              <button
-                on:click={() => setSongFromName(song.name)}
-                class="song-button preset"
-                aria-label={`Load preset ${song.name}`}
-              >
-                {song.name}
-              </button>
-            {/each}
-          </div>
-        </div>
 
-        <!-- Custom Songs -->
-        <div class="song-category">
-          <h4 class="category-title">My Songs</h4>
-          <div class="song-list custom-songs">
-            {#if !userEmail}
-              <div class="no-songs">Sign in to see your songs</div>
-            {:else if customSongs.length === 0}
-              <div class="no-songs">No songs yet. Save one!</div>
-            {:else}
-              {#each customSongs as s}
-                <div class="custom-song-item">
-                  <button
-                    class="song-button custom"
-                    on:click={() => openCustom(s.name)}
-                    aria-label={`Open custom song ${s.name}`}
-                  >
-                    {s.name}
-                  </button>
-                  <button
-                    class="delete-button"
-                    on:click={() => deleteCustom(s.name)}
-                    aria-label={`Delete custom song ${s.name}`}
-                  >
-                    🗑️
-                  </button>
-                </div>
-              {/each}
-            {/if}
-          </div>
-        </div>
-      </div>
-    </div>
-  </section>
 
   <!-- Piano Keyboard -->
   <PianoKeyboard 
@@ -2584,195 +2513,8 @@ function handlePianoNote(note: string, frequency: number) {
     border: 1px solid #e5e7eb;
   }
 
-  /* Song Management */
-  .song-management {
-    background: white;
-    border-radius: 1rem;
-    padding: 2rem;
-    margin-bottom: 2rem;
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
-    border: 1px solid #e5e7eb;
-  }
-
-  .song-panels {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 2rem;
-  }
-
-  .song-panel {
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-  }
-
-  .panel-title {
-    font-size: 1.25rem;
-    font-weight: 700;
-    color: #374151;
-    margin-bottom: 0.5rem;
-    padding-bottom: 0.5rem;
-    border-bottom: 2px solid #e5e7eb;
-  }
-
-  .xml-input {
-    width: 100%;
-    padding: 1rem;
-    border: 2px solid #e5e7eb;
-    border-radius: 0.5rem;
-    font-family: 'Courier New', monospace;
-    font-size: 0.9rem;
-    resize: vertical;
-    min-height: 120px;
-  }
-
-  .xml-input:focus {
-    outline: none;
-    border-color: #667eea;
-  }
-
-  .input-controls {
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-  }
-
-  .song-name-input {
-    padding: 0.75rem;
-    border: 2px solid #e5e7eb;
-    border-radius: 0.5rem;
-    font-size: 0.9rem;
-  }
-
-  .song-name-input:focus {
-    outline: none;
-    border-color: #667eea;
-  }
-
-  .input-buttons {
-    display: flex;
-    gap: 1rem;
-  }
-
-  .action-button {
-    padding: 0.75rem 1.5rem;
-    border: none;
-    border-radius: 0.5rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    flex: 1;
-  }
-
-  .action-button.render {
-    background: #6b7280;
-    color: white;
-  }
-
-  .action-button.render:hover {
-    background: #4b5563;
-  }
-
-  .action-button.save {
-    background: #3b82f6;
-    color: white;
-  }
-
-  .action-button.save:hover:not(:disabled) {
-    background: #2563eb;
-  }
-
-  .action-button.save:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-  .song-category {
-    margin-bottom: 1.5rem;
-  }
-
-  .category-title {
-    font-size: 1rem;
-    font-weight: 600;
-    color: #6b7280;
-    margin-bottom: 0.75rem;
-  }
-
-  .song-list {
-    max-height: 200px;
-    overflow-y: auto;
-    border: 1px solid #e5e7eb;
-    border-radius: 0.5rem;
-    padding: 0.5rem;
-  }
-
-  .song-button {
-    width: 100%;
-    padding: 0.75rem 1rem;
-    margin-bottom: 0.5rem;
-    border: none;
-    border-radius: 0.5rem;
-    font-size: 0.9rem;
-    text-align: left;
-    cursor: pointer;
-    transition: all 0.2s ease;
-  }
-
-  .song-button.preset {
-    background: #8b5cf6;
-    color: white;
-  }
-
-  .song-button.preset:hover {
-    background: #7c3aed;
-  }
-
-  .song-button.custom {
-    background: #10b981;
-    color: white;
-  }
-
-  .song-button.custom:hover {
-    background: #059669;
-  }
-
-  .custom-song-item {
-    display: flex;
-    gap: 0.5rem;
-    margin-bottom: 0.5rem;
-  }
-
-  .custom-song-item .song-button {
-    margin-bottom: 0;
-    flex: 1;
-  }
-
-  .delete-button {
-    padding: 0.5rem;
-    background: #ef4444;
-    color: white;
-    border: none;
-    border-radius: 0.5rem;
-    cursor: pointer;
-    transition: background-color 0.2s ease;
-  }
-
-  .delete-button:hover {
-    background: #dc2626;
-  }
-
-  .no-songs {
-    text-align: center;
-    color: #9ca3af;
-    font-size: 0.9rem;
-    padding: 1rem;
-  }
-
   /* Responsive Design */
   @media (max-width: 1024px) {
-    .song-panels {
-      grid-template-columns: 1fr;
-    }
     
     .mode-buttons {
       flex-direction: column;
@@ -2797,8 +2539,7 @@ function handlePianoNote(note: string, frequency: number) {
     .mode-selection,
     .staff-section,
     .pitch-display,
-    .metronome-section,
-    .song-management {
+    .metronome-section {
       padding: 1.5rem;
     }
     
@@ -2841,8 +2582,7 @@ function handlePianoNote(note: string, frequency: number) {
     .mode-selection,
     .staff-section,
     .pitch-display,
-    .metronome-section,
-    .song-management { padding: 1rem; }
+    .metronome-section { padding: 1rem; }
     .toggle-group { gap: 0.75rem; }
     .auth-form { flex-direction: column; align-items: stretch; }
     .auth-button { width: 100%; }
@@ -2850,6 +2590,5 @@ function handlePianoNote(note: string, frequency: number) {
   }
   @media (max-width: 340px) {
     .app-title { font-size: clamp(1.6rem, 10vw, 2rem); }
-    .panel-title { font-size: 1.1rem; }
   }
 </style>
