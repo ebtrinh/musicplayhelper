@@ -1515,8 +1515,8 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
 
 
 
-  // Manual octave shifting for songs
-  let manualOctaveShift = 0;
+  // Manual pitch transposition for songs (in semitones)
+  let manualTransposition = 0;
 
   function generateRandomSongSegment() {
     console.log('🎵 GENERATING RANDOM SONG SEGMENT CALLED:', {
@@ -1570,10 +1570,11 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
           });
           
           collectedNotes.push(newNote);
+          // Keep original case for now, will uppercase for display later
           collectedKeys.push(selectedKey.replace('/', ''));
           songNotesCollected++;
           
-          console.log(`📝 Collected note ${songNotesCollected}: ${selectedKey.replace('/', '')}`);
+          console.log(`📝 Collected note ${songNotesCollected}: ${selectedKey.replace('/', '').toUpperCase()}`);
         }
       }
       
@@ -1604,8 +1605,8 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
     originalCollectedNotes = [...collectedNotes];
     originalCollectedKeys = collectedNotes.map(note => note.getKeys()[0]); // Store full keys like "f#/4"
 
-    // Apply octave shifting if needed
-    applyOctaveShiftToCollectedNotes();
+    // Apply pitch transposition if needed
+    applyTranspositionToCollectedNotes();
     
     // Get key signature from first measure
     const firstMeasure = measures[startMeasureIndex];
@@ -1630,40 +1631,85 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
     console.log(`🎼 Random song segment ready: ${line.join(', ')}`);
   }
 
-  function applyOctaveShiftToCollectedNotes() {
+  function applyTranspositionToCollectedNotes() {
     if (originalCollectedKeys.length === 0) return;
     
-    // Apply octave shifting to the original collected notes
-    const shiftedNotes: StaveNote[] = [];
-    const shiftedKeys: string[] = [];
+    // Apply semitone transposition to the original collected notes
+    const transposedNotes: StaveNote[] = [];
+    const transposedKeys: string[] = [];
     
     for (let i = 0; i < originalCollectedKeys.length; i++) {
       const originalFullKey = originalCollectedKeys[i]; // e.g., "f#/4"
       
-      // Apply octave shift
-      let shiftedFullKey = originalFullKey;
-      if (manualOctaveShift !== 0) {
-        shiftedFullKey = transposeNote(originalFullKey, manualOctaveShift);
+      // Apply semitone transposition
+      let transposedFullKey = originalFullKey;
+      if (manualTransposition !== 0) {
+        transposedFullKey = transposeBySemitones(originalFullKey, manualTransposition);
       }
       
-      // Create new note with shifted octave
-      const shiftedNote = new StaveNote({
-        keys: [shiftedFullKey],
+      // Create new note with transposed pitch
+      const transposedNote = new StaveNote({
+        keys: [transposedFullKey],
         duration: 'q',
         clef: selectedClef,
         autoStem: true
       });
       
-      shiftedNotes.push(shiftedNote);
-      shiftedKeys.push(shiftedFullKey.replace('/', ''));
+      transposedNotes.push(transposedNote);
+      // Keep original case, will uppercase for display later
+      transposedKeys.push(transposedFullKey.replace('/', ''));
     }
     
-    // Set the shifted notes as current
-    notes = shiftedNotes;
-    line = shiftedKeys;
-    target = line.map(canon);
+    // Set the transposed notes as current
+    notes = transposedNotes;
+    line = transposedKeys.map(key => {
+      // Uppercase only the first letter for display
+      return key.charAt(0).toUpperCase() + key.slice(1);
+    });
+    target = transposedKeys.map(canon); // Use original case for canon function
     
-    console.log(`🎵 Applied octave shift ${manualOctaveShift} to collected notes`);
+    console.log(`🎵 Applied ${manualTransposition} semitone transposition to collected notes`);
+  }
+
+  function transposeBySemitones(noteKey: string, semitones: number): string {
+    // Parse the note key (e.g., "f#/4")
+    const parts = noteKey.split('/');
+    if (parts.length !== 2) return noteKey;
+    
+    const notePart = parts[0];
+    const octave = parseInt(parts[1]);
+    
+    // Convert note to semitone number (C = 0, C# = 1, D = 2, etc.)
+    const noteToSemitone: Record<string, number> = {
+      'c': 0, 'c#': 1, 'db': 1, 'd': 2, 'd#': 3, 'eb': 3, 'e': 4, 'f': 5,
+      'f#': 6, 'gb': 6, 'g': 7, 'g#': 8, 'ab': 8, 'a': 9, 'a#': 10, 'bb': 10, 'b': 11
+    };
+    
+    const semitoneToNote: string[] = [
+      'c', 'c#', 'd', 'd#', 'e', 'f', 'f#', 'g', 'g#', 'a', 'a#', 'b'
+    ];
+    
+    const currentSemitone = noteToSemitone[notePart.toLowerCase()];
+    if (currentSemitone === undefined) return noteKey;
+    
+    // Calculate new semitone position
+    let newSemitone = currentSemitone + semitones;
+    let newOctave = octave;
+    
+    // Handle octave changes
+    while (newSemitone >= 12) {
+      newSemitone -= 12;
+      newOctave++;
+    }
+    while (newSemitone < 0) {
+      newSemitone += 12;
+      newOctave--;
+    }
+    
+    // Keep octave in reasonable range
+    newOctave = Math.max(1, Math.min(8, newOctave));
+    
+    return `${semitoneToNote[newSemitone]}/${newOctave}`;
   }
 
   async function renderAnalysisLine() {
@@ -1722,8 +1768,8 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
     })));
     
     // Apply manual octave shifting
-    if (manualOctaveShift !== 0) {
-      console.log(`🎵 Applying manual octave shift of ${manualOctaveShift} octaves`);
+    if (manualTransposition !== 0) {
+      console.log(`🎵 Applying manual octave shift of ${manualTransposition} octaves`);
       notes = notes.map(note => {
         // Don't transpose rests - they have no pitch, but center them on current clef
         if (isRestNote(note)) {
@@ -1748,7 +1794,7 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
         
         const originalKeys = note.getKeys();
         const transposedKeys = originalKeys.map(key => 
-          transposeNote(key, manualOctaveShift)
+          transposeNote(key, manualTransposition)
         );
         
         return new StaveNote({
@@ -2020,39 +2066,49 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
     showNoteDropdown = false;
     isLoadingSong = true;
 
-    try {
-      const row = await fetchRandomXMLFromPool();
-      xmlText = row.musicxml;
+    // Try up to 5 songs to find one that parses successfully
+    let attempts = 0;
+    const maxAttempts = 5;
+    
+    while (attempts < maxAttempts) {
+      try {
+        const row = await fetchRandomXMLFromPool();
+        xmlText = row.musicxml;
 
-      const meta = extractMetaFromMusicXML(xmlText);
-      const tempTitle = meta.title || '(Untitled)';
-      const tempComposer = meta.composer || '';
+        const meta = extractMetaFromMusicXML(xmlText);
+        const tempTitle = meta.title || '(Untitled)';
+        const tempComposer = meta.composer || '';
 
-      manualOctaveShift = 0;
-      songNotesCollected = 0;
-      originalCollectedNotes = [];
-      originalCollectedKeys = [];
+        manualTransposition = 0;
+        songNotesCollected = 0;
+        originalCollectedNotes = [];
+        originalCollectedKeys = [];
 
-      // Parse the song (all songs accepted now)
-      const parseSuccess = getMusicXML();
-      if (parseSuccess) {
-        currentSongTitle = tempTitle;
-        currentSongComposer = tempComposer;
-        isLoadingSong = false;
-        renderAnalysisLine();
-        gaEvent('random_song_mode_started', { source: 'xml_pool' });
-        return;
+        // Parse the song
+        const parseSuccess = getMusicXML();
+        if (parseSuccess) {
+          currentSongTitle = tempTitle;
+          currentSongComposer = tempComposer;
+          isLoadingSong = false;
+          renderAnalysisLine();
+          gaEvent('random_song_mode_started', { source: 'xml_pool' });
+          return;
+        }
+        
+        // Parsing failed, try another song
+        attempts++;
+        console.log(`🔄 Start attempt ${attempts}/${maxAttempts}: "${tempTitle}" failed to parse, trying another song`);
+        
+      } catch (error) {
+        console.error('Error loading random song:', error);
+        attempts++;
       }
-      
-      // Only fail if parsing completely failed
-      console.log(`❌ Failed to parse "${tempTitle}"`);
-      isLoadingSong = false;
-      switchToRandomNoteMode();
-    } catch (error) {
-      console.error('Error loading random song:', error);
-      isLoadingSong = false;
-      switchToRandomNoteMode();
     }
+    
+    // If we get here, we couldn't find a parseable song
+    isLoadingSong = false;
+    console.log('Could not find a parseable song after', maxAttempts, 'attempts.');
+    switchToRandomNoteMode();
   }
 
   async function nextRandomSong() {
@@ -2061,37 +2117,51 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
     currentSongTitle = '';
     currentSongComposer = '';
     
-    try {
-      const row = await fetchRandomXMLFromPool();
-      xmlText = row.musicxml;
+    // Try up to 5 songs to find one that parses successfully
+    let attempts = 0;
+    const maxAttempts = 5;
+    
+    while (attempts < maxAttempts) {
+      try {
+        const row = await fetchRandomXMLFromPool();
+        xmlText = row.musicxml;
 
-      const meta = extractMetaFromMusicXML(xmlText);
-      const tempTitle = meta.title || '(Untitled)';
-      const tempComposer = meta.composer || '';
+        const meta = extractMetaFromMusicXML(xmlText);
+        const tempTitle = meta.title || '(Untitled)';
+        const tempComposer = meta.composer || '';
 
-      manualOctaveShift = 0;
-      songNotesCollected = 0;
-      originalCollectedNotes = [];
-      originalCollectedKeys = [];
+        manualTransposition = 0;
+        songNotesCollected = 0;
+        originalCollectedNotes = [];
+        originalCollectedKeys = [];
 
-      // Parse the song (all songs accepted now)
-      const parseSuccess = getMusicXML();
-      if (parseSuccess) {
-        currentSongTitle = tempTitle;
-        currentSongComposer = tempComposer;
-        isLoadingSong = false;
-        renderAnalysisLine();
-        gaEvent('next_random_song', { source: 'xml_pool' });
-        return;
+        // Parse the song
+        const parseSuccess = getMusicXML();
+        if (parseSuccess) {
+          currentSongTitle = tempTitle;
+          currentSongComposer = tempComposer;
+          isLoadingSong = false;
+          renderAnalysisLine();
+          gaEvent('next_random_song', { source: 'xml_pool' });
+          return;
+        }
+        
+        // Parsing failed, try another song
+        attempts++;
+        console.log(`🔄 Next song attempt ${attempts}/${maxAttempts}: "${tempTitle}" failed to parse, trying another song`);
+        
+      } catch (error) {
+        console.error('Error loading next random song:', error);
+        attempts++;
       }
-      
-      // Only fail if parsing completely failed
-      console.log(`❌ Failed to parse "${tempTitle}"`);
-      isLoadingSong = false;
-    } catch (error) {
-      console.error('Error loading next random song:', error);
-      isLoadingSong = false;
     }
+    
+    // If we get here, we couldn't find a parseable song
+    isLoadingSong = false;
+    console.log('Could not find a parseable song after', maxAttempts, 'attempts.');
+    // Stay in random song mode but show error state
+    currentSongTitle = 'Error loading songs';
+    currentSongComposer = 'Try again later';
   }
 
   function switchToRandomNoteMode() {
@@ -2130,45 +2200,45 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
     gaEvent('reset_song', { song: currentSongTitle });
     
     // Reset the current song by restarting from the beginning
-    manualOctaveShift = 0;
+    manualTransposition = 0;
     songNotesCollected = 0;
     originalCollectedNotes = [];
     originalCollectedKeys = [];
     renderAnalysisLine();
   }
 
-  function shiftOctaveUp() {
-    console.log('🔺 OCTAVE UP CALLED:', {
+  function transposeUp() {
+    console.log('🔺 TRANSPOSE UP CALLED:', {
       randomSongMode,
       msreCount,
       originalCollectedKeysLength: originalCollectedKeys.length,
-      manualOctaveShift
+      manualTransposition
     });
     if (!randomSongMode) return;
-    manualOctaveShift += 1;
-    console.log(`🎵 Shifted octave up: ${manualOctaveShift}`);
-    // For random song mode, ONLY re-apply octave shift to existing notes
+    manualTransposition += 1;
+    console.log(`🎵 Transposed up by 1 semitone: ${manualTransposition}`);
+    // For random song mode, ONLY re-apply transposition to existing notes
     if (originalCollectedKeys.length > 0) {
-      applyOctaveShiftToCollectedNotes();
+      applyTranspositionToCollectedNotes();
       initializeRenderState(notes, { beats: Math.max(4, Math.min(8, notes.length)), beatType: 4 });
       renderStaffClean();
     }
     // NO fallback - if no notes collected yet, do nothing
   }
 
-  function shiftOctaveDown() {
-    console.log('🔻 OCTAVE DOWN CALLED:', {
+  function transposeDown() {
+    console.log('🔻 TRANSPOSE DOWN CALLED:', {
       randomSongMode,
       msreCount,
       originalCollectedKeysLength: originalCollectedKeys.length,
-      manualOctaveShift
+      manualTransposition
     });
     if (!randomSongMode) return;
-    manualOctaveShift -= 1;
-    console.log(`🎵 Shifted octave down: ${manualOctaveShift}`);
-    // For random song mode, ONLY re-apply octave shift to existing notes
+    manualTransposition -= 1;
+    console.log(`🎵 Transposed down by 1 semitone: ${manualTransposition}`);
+    // For random song mode, ONLY re-apply transposition to existing notes
     if (originalCollectedKeys.length > 0) {
-      applyOctaveShiftToCollectedNotes();
+      applyTranspositionToCollectedNotes();
       initializeRenderState(notes, { beats: Math.max(4, Math.min(8, notes.length)), beatType: 4 });
       renderStaffClean();
     }
@@ -2697,14 +2767,22 @@ function handlePianoNote(note: string, frequency: number) {
               <span class="button-icon">🔄</span>
               Reset Song
             </button>
-            <div class="octave-controls">
-              <button on:click={shiftOctaveUp} class="octave-button up">
-                <span class="octave-icon">⬆️</span>
+            <div class="transpose-controls">
+              <button on:click={transposeUp} class="transpose-button up">
+                <span class="transpose-icon">♯</span>
               </button>
-              <button on:click={shiftOctaveDown} class="octave-button down">
-                <span class="octave-icon">⬇️</span>
+              <button on:click={transposeDown} class="transpose-button down">
+                <span class="transpose-icon">♭</span>
               </button>
-              <span class="octave-label">Octave</span>
+              <div class="transpose-indicator">
+                {#if manualTransposition === 0}
+                  <span class="transpose-label">Original pitch</span>
+                {:else if manualTransposition > 0}
+                  <span class="transpose-label">+{manualTransposition} semitones</span>
+                {:else}
+                  <span class="transpose-label">{manualTransposition} semitones</span>
+                {/if}
+              </div>
             </div>
           {/if}
         </div>
@@ -3169,7 +3247,7 @@ function handlePianoNote(note: string, frequency: number) {
   }
 
   /* Octave Controls */
-  .octave-controls {
+  .transpose-controls {
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -3178,10 +3256,10 @@ function handlePianoNote(note: string, frequency: number) {
     border: 2px solid #d1d5db;
     border-radius: 0.75rem;
     padding: 0.75rem;
-    min-width: 80px;
+    min-width: 120px;
   }
 
-  .octave-button {
+  .transpose-button {
     display: flex;
     align-items: center;
     justify-content: center;
@@ -3193,37 +3271,52 @@ function handlePianoNote(note: string, frequency: number) {
     cursor: pointer;
     transition: all 0.2s ease;
     padding: 0;
+    font-size: 1.2rem;
+    font-weight: bold;
   }
 
-  .octave-button:hover {
+  .transpose-button:hover {
     background: linear-gradient(135deg, #f1f5f9 0%, #e2e8f0 100%);
     border-color: #94a3b8;
     transform: translateY(-1px);
   }
 
-  .octave-button:active {
+  .transpose-button:active {
     transform: translateY(0);
   }
 
-  .octave-button.up {
+  .transpose-button.up {
+    color: #059669;
     margin-bottom: 0.125rem;
   }
 
-  .octave-button.down {
+  .transpose-button.down {
+    color: #dc2626;
     margin-top: 0.125rem;
   }
 
-  .octave-icon {
+  .transpose-icon {
     font-size: 1rem;
     line-height: 1;
   }
 
-  .octave-label {
+  .transpose-indicator {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    margin-top: 0.25rem;
+  }
+
+  .transpose-label {
     font-size: 0.75rem;
     font-weight: 600;
-    color: #64748b;
+    color: #374151;
     text-align: center;
-    margin-top: 0.25rem;
+    background: rgba(255, 255, 255, 0.8);
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.375rem;
+    border: 1px solid rgba(0, 0, 0, 0.1);
   }
 
   /* Loading Indicator */
