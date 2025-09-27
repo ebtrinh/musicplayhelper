@@ -94,6 +94,11 @@ let allowFlats    = true;
   let currentSongTitle = '';
   let currentSongComposer = '';
   let isLoadingSong = false;
+  // Random Song Mode 8-note system
+  const SONG_NOTE_CAP = 8;
+  let songNotesCollected = 0;         // notes collected for current 8-note segment
+  let originalCollectedNotes: StaveNote[] = []; // original notes before octave shifting
+  let originalCollectedKeys: string[] = [];     // original keys before octave shifting
   
   // Dropdown visibility
   let showSongDropdown = false;
@@ -1135,6 +1140,11 @@ function hasNaturalGlyph(ns: StaveNote[]): boolean {
 }
 
   function generateRandomLine() {
+    console.log('🎲 GENERATING RANDOM LINE CALLED:', {
+      randomSongMode,
+      msreCount,
+      stackTrace: new Error().stack?.split('\n').slice(1, 4)
+    });
     // tiny local helpers
     const pick = <T,>(arr: T[]) => arr[Math.floor(Math.random() * arr.length)];
     const stripAccidentals = (ns: StaveNote[]) => {
@@ -1416,28 +1426,50 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
             renderStaffClean();
           }
           if (isGameComplete()){
-            if (msreCount == -1){
-              // Random Note Mode completion
+            console.log('🔍 GAME COMPLETE DETECTED:', {
+              randomSongMode,
+              msreCount,
+              autoNext,
+              measuresLength: measures?.length || 0,
+              totalMsre,
+              currentProgress: renderState?.currentProgress,
+              playableNotesLength: renderState?.playableNotes?.length
+            });
+            
+            if (randomSongMode) {
+              // Random Song Mode: 8-note segment completed
+              console.log('🎵 Random Song Mode: 8-note segment completed');
               if (autoNext) {
+                console.log('🔄 Auto-next enabled: advancing to next random song');
+                // Auto-advance to next random song
+                nextRandomSong().then(() => {
+                  gate = 'WAIT_ATTACK'; haveGoneQuiet = false; matchedFreq = 0;
+                  deferNextFrame = true;
+                });
+                break;
+              }
+              console.log('⏸️ Auto-next disabled: stopping and waiting');
+              // Auto-next off - just stop and wait for user action
+            } else if (msreCount == -1) {
+              // Random Note Mode completion
+              console.log('🎲 Random Note Mode completion detected');
+              if (autoNext) {
+                console.log('🔄 Auto-next enabled: generating new random line');
                 generateRandomLine();
                 gate = 'WAIT_ATTACK'; haveGoneQuiet = false; matchedFreq = 0;
                 deferNextFrame = true;
                 break;
               }
+              console.log('⏸️ Auto-next disabled: stopping and waiting');
               // Auto-next off - just stop and wait for user action
             } else {
+              // Regular song mode progression
+              console.log('🎼 Regular Song Mode progression');
               if (msreCount == totalMsre-1){
-                // Song complete
-                if (autoNext && randomSongMode) {
-                  // Auto-advance to next song in Random Song Mode with Auto-Next ON
-                  nextRandomSong().then(() => {
-                    gate = 'WAIT_ATTACK'; haveGoneQuiet = false; matchedFreq = 0;
-                    deferNextFrame = true;
-                  });
-                  break;
-                }
-                // Auto-next off - just stop and wait for user action
+                console.log('📝 Song complete - no auto-advance in regular mode');
+                // Song complete - no auto-advance in regular mode
               } else {
+                console.log('➡️ Advancing to next measure:', msreCount + 1);
                 msreCount++;
                 renderAnalysisLine();
                 gate = 'WAIT_ATTACK'; haveGoneQuiet = false; matchedFreq = 0; i = 0;
@@ -1486,21 +1518,186 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
   // Manual octave shifting for songs
   let manualOctaveShift = 0;
 
+  function generateRandomSongSegment() {
+    console.log('🎵 GENERATING RANDOM SONG SEGMENT CALLED:', {
+      randomSongMode,
+      msreCount,
+      measuresLength: measures?.length || 0,
+      stackTrace: new Error().stack?.split('\n').slice(1, 4)
+    });
+    
+    if (!measures || measures.length === 0) {
+      console.log('❌ No measures available in Random Song Mode - this should not happen');
+      return;
+    }
+
+    // Pick a random starting measure
+    const startMeasureIndex = Math.floor(Math.random() * measures.length);
+    console.log(`🎯 Starting from measure ${startMeasureIndex + 1} of ${measures.length}`);
+
+    const collectedNotes: StaveNote[] = [];
+    const collectedKeys: string[] = [];
+    let currentMeasureIndex = startMeasureIndex;
+    songNotesCollected = 0;
+
+    // Collect exactly 8 notes across measures, starting from random measure
+    while (songNotesCollected < SONG_NOTE_CAP && currentMeasureIndex < measures.length) {
+      const measure = measures[currentMeasureIndex];
+      
+      for (const note of measure.notes) {
+        if (songNotesCollected >= SONG_NOTE_CAP) break;
+        
+        if (!isRestNote(note)) {
+          const keys = note.getKeys();
+          let selectedKey = keys[0];
+          
+          // Handle chords by selecting the highest note
+          if (keys.length > 1) {
+            selectedKey = [...keys].sort((a, b) => {
+              const pitchA = canon(a.replace('/', ''));
+              const pitchB = canon(b.replace('/', ''));
+              return pitchB - pitchA; // highest first
+            })[0];
+            console.log(`🎵 Chord detected, selected highest note: ${selectedKey} from [${keys.join(', ')}]`);
+          }
+          
+          // Create note with current clef (no octave shifting here - do it later)
+          const newNote = new StaveNote({
+            keys: [selectedKey],
+            duration: 'q', // Standardize to quarter notes
+            clef: selectedClef,
+            autoStem: true
+          });
+          
+          collectedNotes.push(newNote);
+          collectedKeys.push(selectedKey.replace('/', ''));
+          songNotesCollected++;
+          
+          console.log(`📝 Collected note ${songNotesCollected}: ${selectedKey.replace('/', '')}`);
+        }
+      }
+      
+      currentMeasureIndex++;
+      
+      // Wrap around to beginning if we reach the end and still need more notes
+      if (currentMeasureIndex >= measures.length && songNotesCollected < SONG_NOTE_CAP) {
+        currentMeasureIndex = 0;
+        console.log('🔄 Wrapped around to beginning of song');
+        
+        // Prevent infinite loop if song has no playable notes
+        if (songNotesCollected === 0) {
+          console.log('❌ No playable notes found in entire song');
+          return;
+        }
+      }
+      
+      // Prevent infinite loop if we've gone through entire song again
+      if (currentMeasureIndex === startMeasureIndex && songNotesCollected > 0) {
+        console.log('🛑 Completed full cycle through song');
+        break;
+      }
+    }
+
+    console.log(`✅ Collected ${songNotesCollected} notes for 8-note segment`);
+
+    // Store the original notes and full keys before any octave shifting
+    originalCollectedNotes = [...collectedNotes];
+    originalCollectedKeys = collectedNotes.map(note => note.getKeys()[0]); // Store full keys like "f#/4"
+
+    // Apply octave shifting if needed
+    applyOctaveShiftToCollectedNotes();
+    
+    // Get key signature from first measure
+    const firstMeasure = measures[startMeasureIndex];
+    currentKeySig = firstMeasure.key.split(' ')[0];
+    km = new KeyManager(currentKeySig);
+
+    // Reset game state
+    prevTargetFirst = null;
+    gate = 'WAIT_ATTACK';
+    lastNoteTime = 0;
+    matchedFreq = 0;
+    haveGoneQuiet = false;
+
+    // Use simple time signature that accommodates our notes
+    const timeSignature = { beats: Math.max(4, Math.min(8, notes.length)), beatType: 4 };
+    currentBeats = timeSignature.beats;
+    
+    // Initialize rendering system
+    initializeRenderState(notes, timeSignature);
+    renderStaffClean();
+    
+    console.log(`🎼 Random song segment ready: ${line.join(', ')}`);
+  }
+
+  function applyOctaveShiftToCollectedNotes() {
+    if (originalCollectedKeys.length === 0) return;
+    
+    // Apply octave shifting to the original collected notes
+    const shiftedNotes: StaveNote[] = [];
+    const shiftedKeys: string[] = [];
+    
+    for (let i = 0; i < originalCollectedKeys.length; i++) {
+      const originalFullKey = originalCollectedKeys[i]; // e.g., "f#/4"
+      
+      // Apply octave shift
+      let shiftedFullKey = originalFullKey;
+      if (manualOctaveShift !== 0) {
+        shiftedFullKey = transposeNote(originalFullKey, manualOctaveShift);
+      }
+      
+      // Create new note with shifted octave
+      const shiftedNote = new StaveNote({
+        keys: [shiftedFullKey],
+        duration: 'q',
+        clef: selectedClef,
+        autoStem: true
+      });
+      
+      shiftedNotes.push(shiftedNote);
+      shiftedKeys.push(shiftedFullKey.replace('/', ''));
+    }
+    
+    // Set the shifted notes as current
+    notes = shiftedNotes;
+    line = shiftedKeys;
+    target = line.map(canon);
+    
+    console.log(`🎵 Applied octave shift ${manualOctaveShift} to collected notes`);
+  }
+
   async function renderAnalysisLine() {
+    console.log('📋 RENDER ANALYSIS LINE CALLED:', {
+      randomSongMode,
+      msreCount,
+      measuresLength: measures?.length || 0,
+      stackTrace: new Error().stack?.split('\n').slice(1, 4)
+    });
+    
     if (!vfDiv) return;
     
-    // Initialize or load measure
+    if (randomSongMode) {
+      // Random Song Mode: Generate 8-note segment from random measure
+      console.log('🎵 Random Song Mode detected - calling generateRandomSongSegment');
+      generateRandomSongSegment();
+      return;
+    }
+    
+    // Check if this should be Random Note Mode instead
+    if (msreCount == -1 && (!measures || measures.length === 0)) {
+      console.log('🎲 Switching to Random Note Mode');
+      generateRandomLine();
+      return;
+    }
+    
+    // Regular song mode logic
     if (msreCount == -1 || measures == undefined) {
       msreCount = 0;
       const parseSuccess = getMusicXML();
-      
-      // If parsing failed or song was skipped (e.g., contains chords), try next song
-      if (!parseSuccess && randomSongMode) {
-        await nextRandomSong();
+      if (!parseSuccess) {
+        console.log('Parse failed in regular song mode');
         return;
       }
-      
-      // No automatic transposition - user controls octave shifts manually
     }
     
     if (!measures.length) {
@@ -1636,9 +1833,15 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
     }
 
   async function clefchanged(){
-    if (msreCount == -1){
+    if (randomSongMode) {
+      // Random Song Mode: regenerate 8-note segment with new clef
+      console.log(`🎵 Clef changed to ${selectedClef} in Random Song Mode`);
+      generateRandomSongSegment();
+    } else if (msreCount == -1){
+      // Random Note Mode: generate new random notes
       generateRandomLine();
     } else {
+      // Regular Song Mode: reparse current measure
       console.log(`🎵 Clef changed to ${selectedClef}`);
       getMusicXML();
       renderAnalysisLine();
@@ -1721,23 +1924,7 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
         console.log(`  📏 Measure ${index + 1}: ${noteCount} total positions (${actualNotes} notes, ${restCount} rests)`);
       });
       
-      // Check if any measure has more than 12 note positions - if so, skip this song
-      // Note: m.notes.length already represents note positions (chords are single StaveNote objects)
-      const maxNotePositionsPerMeasure = Math.max(...measures.map((m: any) => m.notes.length));
-      if (maxNotePositionsPerMeasure > 12) {
-        console.log(`❌ SKIPPED "${currentSongTitle}": ${maxNotePositionsPerMeasure} note positions in a measure (max: 12)`);
-        measures = [];
-        return false;
-      }
-      
-      // Check if song contains chords/stacked notes - if so, skip this song
-      if (hasChords(measures)) {
-        console.log(`❌ SKIPPED "${currentSongTitle}": contains chords/stacked notes`);
-        measures = [];
-        return false;
-      }
-      
-      console.log(`✅ ACCEPTED "${currentSongTitle}": Song meets all criteria`);
+      console.log(`✅ ACCEPTED "${currentSongTitle}": All songs are now accepted (chords handled by selecting highest note)`);
       return true;
     } catch (error) {
       console.log(`❌ SKIPPED "${currentSongTitle}": Error parsing MusicXML -`, error);
@@ -1833,49 +2020,39 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
     showNoteDropdown = false;
     isLoadingSong = true;
 
-    // Try up to 10 songs to find one without chords
-    let attempts = 0;
-    const maxAttempts = 10;
-    
-    while (attempts < maxAttempts) {
-      try {
-        const row = await fetchRandomXMLFromPool();
-        xmlText = row.musicxml;
+    try {
+      const row = await fetchRandomXMLFromPool();
+      xmlText = row.musicxml;
 
-        // ⬇️ NEW: derive title/composer from the XML itself
-        const meta = extractMetaFromMusicXML(xmlText);
-        const tempTitle = meta.title || '(Untitled)';
-        const tempComposer = meta.composer || '';
+      const meta = extractMetaFromMusicXML(xmlText);
+      const tempTitle = meta.title || '(Untitled)';
+      const tempComposer = meta.composer || '';
 
-        msreCount = -1;
-        manualOctaveShift = 0;
+      manualOctaveShift = 0;
+      songNotesCollected = 0;
+      originalCollectedNotes = [];
+      originalCollectedKeys = [];
 
-        // Try to parse and validate the song
-        const parseSuccess = getMusicXML();
-        if (parseSuccess) {
-          // Only set title/composer after successful validation
-          currentSongTitle = tempTitle;
-          currentSongComposer = tempComposer;
-          isLoadingSong = false;
-          renderAnalysisLine();
-          gaEvent('random_song_mode_started', { source: 'xml_pool' });
-          return;
-        }
-        
-        // Song was filtered out, try again
-        attempts++;
-        console.log(`🔄 Attempt ${attempts}/${maxAttempts}: "${tempTitle}" was rejected, trying another song`);
-        
-      } catch (error) {
-        console.error('Error loading random song:', error);
-        attempts++;
+      // Parse the song (all songs accepted now)
+      const parseSuccess = getMusicXML();
+      if (parseSuccess) {
+        currentSongTitle = tempTitle;
+        currentSongComposer = tempComposer;
+        isLoadingSong = false;
+        renderAnalysisLine();
+        gaEvent('random_song_mode_started', { source: 'xml_pool' });
+        return;
       }
+      
+      // Only fail if parsing completely failed
+      console.log(`❌ Failed to parse "${tempTitle}"`);
+      isLoadingSong = false;
+      switchToRandomNoteMode();
+    } catch (error) {
+      console.error('Error loading random song:', error);
+      isLoadingSong = false;
+      switchToRandomNoteMode();
     }
-    
-    // If we get here, we couldn't find a suitable song
-    isLoadingSong = false;
-    console.log('Could not find a suitable song without chords after', maxAttempts, 'attempts.');
-    switchToRandomNoteMode();
   }
 
   async function nextRandomSong() {
@@ -1884,47 +2061,37 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
     currentSongTitle = '';
     currentSongComposer = '';
     
-    // Try up to 10 songs to find one without chords
-    let attempts = 0;
-    const maxAttempts = 10;
-    
-    while (attempts < maxAttempts) {
-      try {
-        const row = await fetchRandomXMLFromPool();
-        xmlText = row.musicxml;
+    try {
+      const row = await fetchRandomXMLFromPool();
+      xmlText = row.musicxml;
 
-        const meta = extractMetaFromMusicXML(xmlText);
-        const tempTitle = meta.title || '(Untitled)';
-        const tempComposer = meta.composer || '';
+      const meta = extractMetaFromMusicXML(xmlText);
+      const tempTitle = meta.title || '(Untitled)';
+      const tempComposer = meta.composer || '';
 
-        msreCount = -1;
-        manualOctaveShift = 0;
+      manualOctaveShift = 0;
+      songNotesCollected = 0;
+      originalCollectedNotes = [];
+      originalCollectedKeys = [];
 
-        // Try to parse and validate the song
-        const parseSuccess = getMusicXML();
-        if (parseSuccess) {
-          // Only set title/composer after successful validation
-          currentSongTitle = tempTitle;
-          currentSongComposer = tempComposer;
-          isLoadingSong = false;
-          renderAnalysisLine();
-          gaEvent('next_random_song', { source: 'xml_pool' });
-          return;
-        }
-        
-        // Song was filtered out, try again
-        attempts++;
-        console.log(`🔄 Next song attempt ${attempts}/${maxAttempts}: "${tempTitle}" was rejected, trying another song`);
-        
-      } catch (error) {
-        console.error('Error loading next random song:', error);
-        attempts++;
+      // Parse the song (all songs accepted now)
+      const parseSuccess = getMusicXML();
+      if (parseSuccess) {
+        currentSongTitle = tempTitle;
+        currentSongComposer = tempComposer;
+        isLoadingSong = false;
+        renderAnalysisLine();
+        gaEvent('next_random_song', { source: 'xml_pool' });
+        return;
       }
+      
+      // Only fail if parsing completely failed
+      console.log(`❌ Failed to parse "${tempTitle}"`);
+      isLoadingSong = false;
+    } catch (error) {
+      console.error('Error loading next random song:', error);
+      isLoadingSong = false;
     }
-    
-    // If we get here, we couldn't find a suitable song
-    isLoadingSong = false;
-    console.log('Could not find a suitable song without chords after', maxAttempts, 'attempts.');
   }
 
   function switchToRandomNoteMode() {
@@ -1963,23 +2130,49 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
     gaEvent('reset_song', { song: currentSongTitle });
     
     // Reset the current song by restarting from the beginning
-    msreCount = -1;
     manualOctaveShift = 0;
+    songNotesCollected = 0;
+    originalCollectedNotes = [];
+    originalCollectedKeys = [];
     renderAnalysisLine();
   }
 
   function shiftOctaveUp() {
+    console.log('🔺 OCTAVE UP CALLED:', {
+      randomSongMode,
+      msreCount,
+      originalCollectedKeysLength: originalCollectedKeys.length,
+      manualOctaveShift
+    });
     if (!randomSongMode) return;
     manualOctaveShift += 1;
     console.log(`🎵 Shifted octave up: ${manualOctaveShift}`);
-    renderAnalysisLine();
+    // For random song mode, ONLY re-apply octave shift to existing notes
+    if (originalCollectedKeys.length > 0) {
+      applyOctaveShiftToCollectedNotes();
+      initializeRenderState(notes, { beats: Math.max(4, Math.min(8, notes.length)), beatType: 4 });
+      renderStaffClean();
+    }
+    // NO fallback - if no notes collected yet, do nothing
   }
 
   function shiftOctaveDown() {
+    console.log('🔻 OCTAVE DOWN CALLED:', {
+      randomSongMode,
+      msreCount,
+      originalCollectedKeysLength: originalCollectedKeys.length,
+      manualOctaveShift
+    });
     if (!randomSongMode) return;
     manualOctaveShift -= 1;
     console.log(`🎵 Shifted octave down: ${manualOctaveShift}`);
-    renderAnalysisLine();
+    // For random song mode, ONLY re-apply octave shift to existing notes
+    if (originalCollectedKeys.length > 0) {
+      applyOctaveShiftToCollectedNotes();
+      initializeRenderState(notes, { beats: Math.max(4, Math.min(8, notes.length)), beatType: 4 });
+      renderStaffClean();
+    }
+    // NO fallback - if no notes collected yet, do nothing
   }
 
 
@@ -2202,27 +2395,43 @@ function handlePianoNote(note: string, frequency: number) {
     renderStaffClean();
     
     if (isGameComplete()) {
-      if (msreCount == -1) {
-        generateRandomLine();
-        gate = 'WAIT_ATTACK';
-        haveGoneQuiet = false;
-        matchedFreq = 0;
-        deferNextFrame = true;
+      console.log('🎹 Piano completion detected:', {
+        randomSongMode,
+        msreCount,
+        autoNext
+      });
+      
+      if (randomSongMode) {
+        // Random Song Mode: 8-note segment completed
+        console.log('🎵 Random Song Mode: 8-note segment completed (from piano)');
+        if (autoNext) {
+          console.log('🔄 Auto-next enabled: advancing to next random song (from piano)');
+          nextRandomSong().then(() => {
+            gate = 'WAIT_ATTACK';
+            haveGoneQuiet = false;
+            matchedFreq = 0;
+            deferNextFrame = true;
+          });
+        } else {
+          console.log('⏸️ Auto-next disabled: stopping and waiting (from piano)');
+        }
+      } else if (msreCount == -1) {
+        // Random Note Mode completion
+        console.log('🎲 Random Note Mode completion (from piano)');
+        if (autoNext) {
+          generateRandomLine();
+          gate = 'WAIT_ATTACK';
+          haveGoneQuiet = false;
+          matchedFreq = 0;
+          deferNextFrame = true;
+        }
       } else {
+        // Regular song mode progression
         if (msreCount == totalMsre - 1) {
           // Song complete
-          if (autoNext && randomSongMode) {
-            // Auto-advance to next song in Random Song Mode with Auto-Next ON
-            nextRandomSong().then(() => {
-              gate = 'WAIT_ATTACK';
-              haveGoneQuiet = false;
-              matchedFreq = 0;
-              i = 0;
-              deferNextFrame = true;
-            });
-          }
-          // Flow mode off - just stop and wait for user action
+          console.log('📝 Regular song complete (from piano)');
         } else {
+          console.log('➡️ Advancing to next measure (from piano):', msreCount + 1);
           msreCount++;
           renderAnalysisLine();
           gate = 'WAIT_ATTACK';
