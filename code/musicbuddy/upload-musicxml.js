@@ -61,7 +61,7 @@ async function extractZipFile(zipPath) {
         }
         
         const fileName = entry.fileName.toLowerCase();
-        if (!fileName.endsWith('.xml') && !fileName.endsWith('.mxl')) {
+        if (!fileName.endsWith('.xml') && !fileName.endsWith('.mxl') && !fileName.endsWith('.musicxml')) {
           if (options.verbose) {
             console.log(`   Skipping non-MusicXML file: ${entry.fileName}`);
           }

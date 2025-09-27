@@ -121,7 +121,41 @@ export function parseMusicXML(xml:string, clef:string):MeasureData[]{
     }
   }
   
-  doc.querySelectorAll('measure').forEach((meas,i)=>{
+  // Only process first 4 measures
+  const allMeasures = Array.from(doc.querySelectorAll('measure'));
+  const measuresToProcess = allMeasures.slice(0, 4);
+  
+  // Try to find treble clef part first
+  let trebleClefPart: Element | null = null;
+  const parts = doc.querySelectorAll('part');
+  
+  console.log(`🎼 MusicXML has ${parts.length} parts, ${allMeasures.length} total measures`);
+  
+  // Look for a part with treble clef
+  for (const part of parts) {
+    const clefSign = part.querySelector('attributes clef sign');
+    const partId = part.getAttribute('id') || 'unknown';
+    console.log(`🎼 Part ${partId}: clef = ${clefSign?.textContent || 'none'}`);
+    if (clefSign?.textContent === 'G') {
+      trebleClefPart = part;
+      console.log(`✅ Selected treble clef part: ${partId}`);
+      break;
+    }
+  }
+  
+  // If no explicit treble clef found, use the first part (often melody)
+  if (!trebleClefPart && parts.length > 0) {
+    trebleClefPart = parts[0];
+    const partId = trebleClefPart.getAttribute('id') || 'first';
+    console.log(`⚠️ No treble clef found, using first part: ${partId}`);
+  }
+  
+  // Process measures from the selected part only
+  const partMeasures = trebleClefPart ? 
+    Array.from(trebleClefPart.querySelectorAll('measure')).slice(0, 4) :
+    measuresToProcess;
+  
+  partMeasures.forEach((meas,i)=>{
     const num=parseInt(meas.getAttribute('number')||String(i+1));
     
     // Check for key signature changes
@@ -148,6 +182,9 @@ export function parseMusicXML(xml:string, clef:string):MeasureData[]{
     }
     
     const notes:Array<StaveNote>=[];
+    let currentChordKeys: string[] = [];
+    let currentChordDuration = 'q';
+    
     meas.querySelectorAll('note').forEach(n=>{
       if(n.querySelector('rest')) return;
       
@@ -155,6 +192,21 @@ export function parseMusicXML(xml:string, clef:string):MeasureData[]{
       const oct =n.querySelector('pitch > octave')?.textContent||'4';
       const alt =n.querySelector('pitch > alter')?.textContent;
       const acc =alt?(alt==='1'?'#':'b'):'';
+      const noteKey = `${step}${acc}/${oct}`;
+      
+      // Check if this note is part of a chord
+      const isChord = n.querySelector('chord') !== null;
+      
+      if (!isChord && currentChordKeys.length > 0) {
+        // Finish the previous chord
+        notes.push(new StaveNote({
+          clef,
+          duration: currentChordDuration,
+          keys: currentChordKeys,
+          autoStem: true
+        }));
+        currentChordKeys = [];
+      }
       
       // Get note duration and calculate proper note value
       const durationElement = n.querySelector('duration');
@@ -186,9 +238,31 @@ export function parseMusicXML(xml:string, clef:string):MeasureData[]{
         vfDuration = '32'; // thirty-second note or shorter
       }
       
-      notes.push(new StaveNote({clef,duration:vfDuration,keys:[`${step}${acc}/${oct}`], autoStem: true}));
+      if (isChord) {
+        // Add to current chord
+        currentChordKeys.push(noteKey);
+        currentChordDuration = vfDuration; // All notes in chord should have same duration
+      } else {
+        // Single note
+        currentChordKeys = [noteKey];
+        currentChordDuration = vfDuration;
+      }
     });
-    if(notes.length) out.push({num,key,roman:'melody',notes,timeSignature});
+    
+    // Don't forget the last chord/note
+    if (currentChordKeys.length > 0) {
+      notes.push(new StaveNote({
+        clef,
+        duration: currentChordDuration,
+        keys: currentChordKeys,
+        autoStem: true
+      }));
+    }
+    if(notes.length) {
+      out.push({num,key,roman:'melody',notes,timeSignature});
+    }
   });
+  
+  console.log(`🎼 Extracted ${out.length} measures (max 4) from treble clef part`);
   return out;
 }

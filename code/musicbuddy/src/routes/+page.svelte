@@ -93,6 +93,7 @@ let allowFlats    = true;
   let autoNext = false; // Controls auto-advance behavior
   let currentSongTitle = '';
   let currentSongComposer = '';
+  let isLoadingSong = false;
   
   // Dropdown visibility
   let showSongDropdown = false;
@@ -116,8 +117,22 @@ const setLedger = (L: string, o: number, t: AccType) => {
   barLedger[`${L}${o}`] = t;
 };
 
+// ========================================
+// CLEAN RENDERING SYSTEM - REWRITTEN FROM SCRATCH
+// ========================================
+
+interface RenderState {
+  originalNotes: StaveNote[];     // Original notes from parsing
+  playableNotes: StaveNote[];     // Notes that can be played (no rests)
+  renderedNotes: StaveNote[];     // Fresh notes for VexFlow rendering
+  currentProgress: number;        // Index in playableNotes
+  timeSignature: { beats: number; beatType: number };
+  hasBeenPadded: boolean;         // Prevent re-padding
+}
+
+let renderState: RenderState | null = null;
+
 function beatsFromNotes(ns: StaveNote[]) {
-  // VexFlow durations can be 'q','h','8','qr','8r', etc. Strip the 'r' if present.
   const toBeat = (dur: string) => {
     const d = dur.replace('r','');   // rest or not, both count the same for timing
     if (d === 'w') return 4;
@@ -126,11 +141,397 @@ function beatsFromNotes(ns: StaveNote[]) {
     if (d === '8') return 0.5;
     if (d === '16') return 0.25;
     if (d === '32') return 0.125;
-    // fallback: treat unknown as a quarter
     return 1;
   };
   return ns.reduce((sum, n) => sum + toBeat(n.getDuration()), 0);
 }
+
+function isRestNote(note: StaveNote): boolean {
+  try {
+    const anyNote = note as any;
+    const dur: string = typeof note.getDuration === 'function' ? note.getDuration() : '';
+    const hasRInDuration = typeof dur === 'string' && dur.includes('r');
+    const flagRest = anyNote?.rest === true || anyNote?.noteType === 'r';
+    const methodRest = typeof anyNote?.isRest === 'function' ? !!anyNote.isRest() : false;
+    return hasRInDuration || flagRest || methodRest;
+  } catch {
+    return false;
+  }
+}
+
+function getCenterLineKey(clef: Clef): string {
+  // Return the center line key for each clef
+  switch (clef) {
+    case 'treble': return 'b/4';  // B4 is center line for treble clef
+    case 'alto': return 'd/4';    // D4 is center line for alto clef  
+    case 'bass': return 'd/3';    // D3 is center line for bass clef
+    default: return 'b/4';        // Default to treble
+  }
+}
+
+function createFreshNote(originalNote: StaveNote, isCompleted: boolean = false): StaveNote {
+  try {
+    const duration = originalNote.getDuration();
+    const keys = originalNote.getKeys();
+    
+    // Validate required properties
+    if (!duration || !keys || keys.length === 0) {
+      console.error('❌ Invalid original note properties:', { duration, keys });
+      throw new Error(`Invalid note properties: duration=${duration}, keys=${keys}`);
+    }
+    
+    // For rests, we need to ensure they're created properly and remain as rests
+    if (isRestNote(originalNote)) {
+      const restNote = new StaveNote({
+        keys: [getCenterLineKey(selectedClef)], // Always use center line for current clef
+        duration: (() => {
+          // Ensure rest duration contains 'r' for VexFlow to keep it a rest
+          if (typeof duration === 'string' && duration.includes('r')) return duration;
+          const base = typeof duration === 'string' ? duration : 'q';
+          const allowed = new Set(['w','h','q','8','16','32']);
+          const core = allowed.has(base) ? base : 'q';
+          return `${core}r`;
+        })(),
+        clef: selectedClef
+      });
+      
+      // Explicitly set rest properties to ensure VexFlow recognizes it as a rest
+      (restNote as any).rest = true;
+      (restNote as any).noteType = 'r';
+      
+      // Set the isRest method to always return true
+      (restNote as any).isRest = () => true;
+      
+      // Copy any additional rest-specific properties from the original
+      const originalAny = originalNote as any;
+      if (originalAny.glyph) {
+        (restNote as any).glyph = originalAny.glyph;
+      }
+      
+      // Ensure the note maintains its rest status through various VexFlow operations
+      Object.defineProperty(restNote, 'rest', {
+        value: true,
+        writable: false,
+        enumerable: true,
+        configurable: false
+      });
+      
+      return restNote;
+    } else {
+      // Create a regular note
+      const newNote = new StaveNote({
+        keys: keys,
+        duration: duration,
+        clef: selectedClef,
+        autoStem: true
+      });
+      
+      // Apply green styling if completed
+      if (isCompleted) {
+        try {
+          newNote.setStyle({ fillStyle: GREEN, strokeStyle: GREEN });
+        } catch (styleError) {
+          console.warn('❌ Error applying note style:', styleError);
+        }
+      }
+      
+      return newNote;
+    }
+  } catch (error) {
+    console.error('❌ Error creating fresh note:', error);
+    // Create a simple fallback note
+    return new StaveNote({
+      keys: ['c/4'],
+      duration: 'q',
+      clef: selectedClef
+    });
+  }
+}
+
+function initializeRenderState(originalNotes: StaveNote[], timeSignature: { beats: number; beatType: number }) {
+  // Extract only playable notes (non-rests)
+  const playableNotes = originalNotes.filter(note => !isRestNote(note));
+  
+  renderState = {
+    originalNotes: [...originalNotes],
+    playableNotes,
+    renderedNotes: [],
+    currentProgress: 0,
+    timeSignature,
+    hasBeenPadded: false
+  };
+  
+
+}
+
+function prepareNotesForRendering(): { notes: StaveNote[], timeSignature: { beats: number; beatType: number } } {
+  if (!renderState) {
+    throw new Error('Render state not initialized');
+  }
+
+  // Create fresh copies of all original notes with current progress styling
+  const freshNotes = renderState.originalNotes.map((originalNote, index) => {
+    let isCompleted = false;
+    const isRest = isRestNote(originalNote);
+    
+    if (!isRest) {
+      const playableIndex = renderState!.originalNotes
+        .slice(0, index)
+        .filter(n => !isRestNote(n)).length;
+      isCompleted = playableIndex < renderState!.currentProgress;
+    }
+    
+    return createFreshNote(originalNote, isCompleted);
+  });
+
+  // Handle measure padding (only once)
+  let finalNotes = [...freshNotes];
+  let finalTimeSignature = renderState.timeSignature;
+  
+  if (!renderState.hasBeenPadded) {
+    const actualBeats = beatsFromNotes(freshNotes);
+    const expectedBeats = renderState.timeSignature.beats;
+    
+    if (actualBeats < expectedBeats - 0.1) {
+      let missingBeats = expectedBeats - actualBeats;
+      while (missingBeats >= 1) {
+        const quarterRest = new StaveNote({ 
+          keys: [getCenterLineKey(selectedClef)], 
+          duration: 'qr',
+          clef: selectedClef 
+        });
+        (quarterRest as any).rest = true;
+        (quarterRest as any).noteType = 'r';
+        (quarterRest as any).isRest = () => true;
+        // Make rest property immutable
+        Object.defineProperty(quarterRest, 'rest', {
+          value: true,
+          writable: false,
+          enumerable: true,
+          configurable: false
+        });
+        finalNotes.push(quarterRest);
+        missingBeats -= 1;
+      }
+      if (missingBeats >= 0.5) {
+        const eighthRest = new StaveNote({ 
+          keys: [getCenterLineKey(selectedClef)], 
+          duration: '8r',
+          clef: selectedClef 
+        });
+        (eighthRest as any).rest = true;
+        (eighthRest as any).noteType = 'r';
+        (eighthRest as any).isRest = () => true;
+        // Make rest property immutable
+        Object.defineProperty(eighthRest, 'rest', {
+          value: true,
+          writable: false,
+          enumerable: true,
+          configurable: false
+        });
+        finalNotes.push(eighthRest);
+      }
+      
+      renderState.hasBeenPadded = true;
+      renderState.originalNotes = finalNotes;
+    }
+  }
+  
+  return { notes: finalNotes, timeSignature: finalTimeSignature };
+}
+
+function renderStaffClean() {
+  if (!vfDiv || !renderState) {
+    console.error('❌ RENDER ERROR: missing vfDiv or renderState');
+    vfDiv && (vfDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: red;">Rendering error: Missing required components</div>');
+    return;
+  }
+
+  try {
+    const { notes: notesToRender, timeSignature } = prepareNotesForRendering();
+    
+    // Normalize rests to guarantee they render as rests on every re-render
+    const normalizedNotes: StaveNote[] = notesToRender.map((n, idx) => {
+      try {
+        if (isRestNote(n)) {
+          const dur = n.getDuration?.() ?? 'q';
+          const base = typeof dur === 'string' ? dur.replace('r','') : 'q';
+          const ensured = (typeof dur === 'string' && dur.includes('r')) ? dur : `${base}r`;
+          const restNote = new StaveNote({
+            keys: [getCenterLineKey(selectedClef)],
+            duration: ensured,
+            clef: selectedClef
+          });
+          (restNote as any).rest = true;
+          (restNote as any).noteType = 'r';
+          (restNote as any).isRest = () => true;
+          Object.defineProperty(restNote, 'rest', {
+            value: true,
+            writable: false,
+            enumerable: true,
+            configurable: false
+          });
+          return restNote;
+        }
+      } catch {}
+      return n;
+    });
+    
+    if (!notesToRender || notesToRender.length === 0) {
+      throw new Error('No notes to render');
+    }
+    
+    console.log(`🎼 RENDER: Processing ${notesToRender.length} notes`);
+    
+    // Create Voice with proper timing
+    const voice = new Voice({ 
+      numBeats: timeSignature.beats, 
+      beatValue: timeSignature.beatType 
+    });
+    
+    if ((voice as any).setStrict) {
+      (voice as any).setStrict(false);
+    }
+    
+    // Validate each note before adding to voice
+    const validNotes: StaveNote[] = [];
+    for (let i = 0; i < normalizedNotes.length; i++) {
+      const note = normalizedNotes[i];
+      try {
+        if (!note.getDuration || !note.getKeys) {
+          console.error(`❌ RENDER ERROR: Note ${i} missing methods:`, {
+            hasDuration: !!note.getDuration,
+            hasGetKeys: !!note.getKeys,
+            note: note
+          });
+          continue;
+        }
+        
+        const duration = note.getDuration();
+        const keys = note.getKeys();
+        
+        if (!duration || !keys || keys.length === 0) {
+          console.error(`❌ RENDER ERROR: Note ${i} invalid data:`, { duration, keys });
+          continue;
+        }
+        
+        validNotes.push(note);
+      } catch (noteError) {
+        console.error(`❌ RENDER ERROR: Note ${i} validation failed:`, noteError);
+      }
+    }
+    
+    if (validNotes.length === 0) {
+      throw new Error('No valid notes to render');
+    }
+    
+    console.log(`🎼 RENDER: ${validNotes.length} valid notes`);
+    
+    voice.addTickables(validNotes);
+    
+    // Calculate stave dimensions
+    const formatter = new Formatter();
+    formatter.joinVoices([voice]).preFormat();
+    const minWidth = formatter.getMinTotalWidth();
+    const accCount = accidentalCount(currentKeySig);
+    const heuristicWidth = calcStaveWidth(validNotes, accCount);
+    
+    // Create renderer
+    vfDiv.innerHTML = '';
+    const renderer = new Renderer(vfDiv, Renderer.Backends.SVG);
+    const width = Math.max(minWidth + 40, heuristicWidth, 300);
+    renderer.resize(width, 140);
+    
+    const ctx = renderer.getContext();
+    if (!ctx) {
+      throw new Error('Failed to get rendering context');
+    }
+    
+    // Create and draw stave
+    const stave = new Stave(10, 20, width - 20)
+      .addClef(selectedClef)
+      .addTimeSignature(`${timeSignature.beats}/${timeSignature.beatType}`)
+      .addKeySignature(currentKeySig);
+    
+    stave.setContext(ctx).draw();
+    
+    // Apply accidentals
+    if (useKeyOnly) {
+      stripAccidentalsFromNotes(validNotes);
+    } else if (!allowNaturals) {
+      stripAccidentalsFromNotes(validNotes);
+      addAccidentalsFromKeys(validNotes);
+    } else {
+      Accidental.applyAccidentals([voice], currentKeySig);
+    }
+    
+    // Beam generation disabled - eighth notes will show individual flags
+    let beams: any[] = [];
+    
+    // Set context for all notes
+    validNotes.forEach((note, index) => {
+      try {
+        if (!note.getContext()) {
+          note.setContext(ctx);
+        }
+      } catch (contextError) {
+        console.error(`❌ RENDER ERROR: Context setting failed for note ${index}:`, contextError);
+      }
+    });
+    
+    console.log('🎼 RENDER: Formatting and drawing voice...');
+    formatter.formatToStave([voice], stave);
+    
+    voice.draw(ctx, stave);
+    
+    // Beam drawing disabled - eighth notes will show individual flags
+    
+    // Make SVG responsive
+    const svgRoot = vfDiv.querySelector('svg');
+    if (svgRoot) {
+      svgRoot.setAttribute('viewBox', `0 0 ${width} 140`);
+      svgRoot.setAttribute('preserveAspectRatio', 'xMinYMin meet');
+      (svgRoot as SVGSVGElement).style.width = '100%';
+      (svgRoot as SVGSVGElement).style.height = 'auto';
+      (svgRoot as SVGSVGElement).style.display = 'block';
+    }
+    
+    notes = validNotes;
+    console.log(`✅ RENDER: Complete - ${validNotes.length} notes rendered`);
+    
+  } catch (error) {
+    console.error('❌ RENDER ERROR:', error);
+    vfDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: red;">Error rendering staff - please try again</div>';
+  }
+}
+
+function advanceProgress() {
+  if (!renderState) return false;
+  
+  if (renderState.currentProgress < renderState.playableNotes.length) {
+    renderState.currentProgress++;
+    console.log(`🎯 Progress: ${renderState.currentProgress}/${renderState.playableNotes.length}`);
+    return true;
+  }
+  return false;
+}
+
+function getCurrentPlayableNote(): StaveNote | null {
+  if (!renderState || renderState.currentProgress >= renderState.playableNotes.length) {
+    return null;
+  }
+  return renderState.playableNotes[renderState.currentProgress];
+}
+
+function isGameComplete(): boolean {
+  return renderState ? renderState.currentProgress >= renderState.playableNotes.length : false;
+}
+
+// DISABLED: Group consecutive beamable notes for manual beam creation
+// function groupConsecutiveBeamableNotes(notes: StaveNote[]): StaveNote[][] {
+//   // Function disabled - beaming has been removed
+//   return [];
+// }
 
 // choose an integer TS top number to draw (you can refine later)
 function normalizeBeats(b: number) {
@@ -276,6 +677,9 @@ function normalizeBeats(b: number) {
   // remove any accidental glyphs already attached to notes
   function stripAccidentalsFromNotes(ns: StaveNote[]) {
   (ns as any[]).forEach(n => {
+    // Skip rest notes - they don't have accidentals
+    if (isRestNote(n)) return;
+    
     // remove any accidental-like modifier (covers v3/v4 categories)
     n.modifiers = (n.modifiers ?? []).filter((m: any) => {
       const cat = m?.getCategory?.();
@@ -296,6 +700,9 @@ function normalizeBeats(b: number) {
 // add only the sharp/flat that is explicitly in the key string (e.g. "f#/4" or "bb/4")
 function addAccidentalsFromKeys(ns: StaveNote[]) {
   (ns as any[]).forEach(n => {
+    // Skip rest notes - they don't have accidentals
+    if (isRestNote(n)) return;
+    
     // remove any existing accidental modifiers first
     n.modifiers = (n.modifiers ?? []).filter(
       (m: any) => m?.getCategory?.() !== 'accidentals'
@@ -324,6 +731,8 @@ function hasNaturalGlyph(ns: StaveNote[]): boolean {
   }
   return false;
 }
+
+
   
   let ctx:AudioContext, analyser:AnalyserNode;
   const buf = new Float32Array(BUF_SIZE), hist:number[] = [];
@@ -399,12 +808,16 @@ function hasNaturalGlyph(ns: StaveNote[]): boolean {
   const GREEN = '#16a34a';
   const markNoteGreen = (n: StaveNote) => {
     try {
+      console.log('🟢 Marking note green:', { note: n?.getKeys?.(), duration: n?.getDuration?.() });
       // Safely set the note style
       if (n && typeof n.setStyle === 'function') {
         n.setStyle({ fillStyle: GREEN, strokeStyle: GREEN });
+        console.log('✅ Note marked green successfully');
+      } else {
+        console.warn('❌ Note does not have setStyle method:', n);
       }
     } catch (error) {
-      console.warn('Error marking note green:', error);
+      console.warn('❌ Error marking note green:', error);
     }
   };
 
@@ -430,20 +843,112 @@ function hasNaturalGlyph(ns: StaveNote[]): boolean {
     return ghost.getNoteStartX() - ghost.getX();
   }
 
+  // Legacy function - redirects to new clean rendering system
   function renderStaff(beats: number): void {
+    renderStaffClean();
+  }
+
+  function renderStaffOLD(beats: number): void {
     if (!vfDiv) return;
     if (!notes || notes.length === 0) return;
 
     try {
-      console.log('renderStaff():', { mode: msreCount === -1 ? 'random' : 'analysis', beatsArg: beats, currentBeats });
-      const voice = new Voice({ numBeats: beats, beatValue: 4 });
-      // Avoid strict timing errors if rounding creates tiny mismatches
+      // Calculate actual beats from notes
+      const actualBeats = beatsFromNotes(notes);
+      const expectedBeats = beats;
+      
+      // If there's a significant mismatch, pad with rests or adjust beats
+      let adjustedBeats = beats;
+      // Create fresh copies of notes to avoid context issues
+      // Apply green styling to matched notes
+      let paddedNotes = notes.map((note, idx) => {
+        // Preserve rest information when creating fresh notes
+        const isRest = note.getDuration().includes('r');
+        const newNote = new StaveNote({
+          keys: note.getKeys(),
+          duration: note.getDuration(),
+          clef: selectedClef,
+          autoStem: true
+        });
+        
+        // Mark notes as green if they've been matched (idx < i) and not a rest
+        if (idx < i && !isRest) {
+          newNote.setStyle({ fillStyle: GREEN, strokeStyle: GREEN });
+        }
+        
+        return newNote;
+      });
+      
+      // Only pad if we don't already have rests (to prevent re-padding on re-renders)
+      const hasRests = paddedNotes.some(note => note.getDuration().includes('r'));
+      
+      if (Math.abs(actualBeats - expectedBeats) > 0.1 && !hasRests) {
+        if (actualBeats < expectedBeats) {
+          // Pad with rests to fill the measure
+          const missingBeats = expectedBeats - actualBeats;
+          console.log(`📏 Padding measure: ${actualBeats} beats → ${expectedBeats} beats (adding ${missingBeats} beats of rests)`);
+          
+          // Add quarter rests to fill the gap
+          let remainingBeats = missingBeats;
+          while (remainingBeats >= 1) {
+            const quarterRest = new StaveNote({ 
+              keys: [getCenterLineKey(selectedClef)], 
+              duration: 'qr', // quarter rest
+              clef: selectedClef 
+            });
+            (quarterRest as any).rest = true;
+            (quarterRest as any).noteType = 'r';
+            (quarterRest as any).isRest = () => true;
+            // Make rest property immutable
+            Object.defineProperty(quarterRest, 'rest', {
+              value: true,
+              writable: false,
+              enumerable: true,
+              configurable: false
+            });
+            paddedNotes.push(quarterRest);
+            remainingBeats -= 1;
+          }
+          
+          // Add eighth rest if needed
+          if (remainingBeats >= 0.5) {
+            const eighthRest = new StaveNote({ 
+              keys: [getCenterLineKey(selectedClef)], 
+              duration: '8r', // eighth rest
+              clef: selectedClef 
+            });
+            (eighthRest as any).rest = true;
+            (eighthRest as any).noteType = 'r';
+            (eighthRest as any).isRest = () => true;
+            // Make rest property immutable
+            Object.defineProperty(eighthRest, 'rest', {
+              value: true,
+              writable: false,
+              enumerable: true,
+              configurable: false
+            });
+            paddedNotes.push(eighthRest);
+            remainingBeats -= 0.5;
+          }
+          
+          adjustedBeats = expectedBeats;
+        } else {
+          // Too many beats - use actual beats
+          adjustedBeats = Math.max(1, normalizeBeats(actualBeats));
+        }
+      }
+      
+      const voice = new Voice({ numBeats: adjustedBeats, beatValue: 4 });
+      // Always use soft mode to handle timing mismatches gracefully
       if ((voice as any).setStrict) {
         (voice as any).setStrict(false);
       } else if ((voice as any).setMode && (Voice as any).Mode) {
         (voice as any).setMode((Voice as any).Mode.SOFT);
       }
-      voice.addTickables(notes);
+      voice.addTickables(paddedNotes);
+      
+      // Update the global notes array to reference the rendered notes so markNoteGreen works
+      notes = paddedNotes;
 
       const fmt = new Formatter();
       fmt.joinVoices([voice]).preFormat();
@@ -452,14 +957,29 @@ function hasNaturalGlyph(ns: StaveNote[]): boolean {
       vfDiv.innerHTML = '';
       const renderer = new Renderer(vfDiv, Renderer.Backends.SVG);
       renderer.resize(10, 140);
-      const ctx = renderer.getContext();
-
-      const leadIn = measureLead(ctx, beats);
+      // Calculate dimensions first
       const accCnt = accidentalCount(currentKeySig);
       const heuristic = calcStaveWidth(notes, accCnt);
+      
+      // Get initial context for measuring
+      let ctx = renderer.getContext();
+      if (!ctx) {
+        console.error('Failed to get initial rendering context');
+        return;
+      }
+      
+      const leadIn = measureLead(ctx, beats);
       const width = Math.ceil(Math.max(heuristic, minNotesWidth + leadIn + 20));
 
+      // Resize and get a fresh context
       renderer.resize(width, 140);
+      ctx = renderer.getContext();
+      
+      if (!ctx) {
+        console.error('Failed to get rendering context after resize');
+        return;
+      }
+      
       // Make SVG responsive: set viewBox and fluid size
       const svgRoot = vfDiv.querySelector('svg');
       if (svgRoot) {
@@ -469,9 +989,10 @@ function hasNaturalGlyph(ns: StaveNote[]): boolean {
         (svgRoot as SVGSVGElement).style.height = 'auto';
         (svgRoot as SVGSVGElement).style.display = 'block';
       }
+      
       const stave = new Stave(10, 20, width)
         .addClef(selectedClef)
-        .addTimeSignature(`${beats}/4`)
+        .addTimeSignature(`${adjustedBeats}/4`)
         .addKeySignature(currentKeySig);
 
       stave.setContext(ctx).draw();
@@ -491,11 +1012,73 @@ function hasNaturalGlyph(ns: StaveNote[]): boolean {
       }
 
       new Formatter().joinVoices([voice]).formatToStave([voice], stave);
-      voice.draw(ctx, stave);
+      
+      // Draw voice with error handling
+      try {
+        voice.draw(ctx, stave);
+      } catch (voiceDrawError) {
+        console.error('Error drawing voice:', voiceDrawError);
+        
+        // Completely recreate the renderer and context
+        try {
+          vfDiv.innerHTML = '';
+          const newRenderer = new Renderer(vfDiv, Renderer.Backends.SVG);
+          newRenderer.resize(width, 140);
+          const newCtx = newRenderer.getContext();
+          
+          // Make SVG responsive again
+          const svgRoot = vfDiv.querySelector('svg');
+          if (svgRoot) {
+            svgRoot.setAttribute('viewBox', `0 0 ${width} 140`);
+            svgRoot.setAttribute('preserveAspectRatio', 'xMinYMin meet');
+            (svgRoot as SVGSVGElement).style.width = '100%';
+            (svgRoot as SVGSVGElement).style.height = 'auto';
+            (svgRoot as SVGSVGElement).style.display = 'block';
+          }
+          
+          // Recreate and draw the stave
+          const newStave = new Stave(10, 20, width)
+            .addClef(selectedClef)
+            .addTimeSignature(`${adjustedBeats}/4`)
+            .addKeySignature(currentKeySig);
+          
+          newStave.setContext(newCtx).draw();
+          
+          // Re-apply accidentals to notes
+          if (useKeyOnly) {
+            stripAccidentalsFromNotes(paddedNotes);
+          } else if (!allowNaturals) {
+            stripAccidentalsFromNotes(paddedNotes);
+            addAccidentalsFromKeys(paddedNotes);
+          } else {
+            Accidental.applyAccidentals([voice], currentKeySig);
+          }
+          
+          // Reset all notes to ensure they don't have stale context references
+          paddedNotes.forEach(note => {
+            if ((note as any).stave) {
+              (note as any).stave = null;
+            }
+            if ((note as any).context) {
+              (note as any).context = null;
+            }
+          });
+          
+          // Format and draw with new context
+          new Formatter().joinVoices([voice]).formatToStave([voice], newStave);
+          voice.draw(newCtx, newStave);
+          
+          // Update ctx for beam drawing and ensure notes array is updated
+          ctx = newCtx;
+          notes = paddedNotes; // Ensure markNoteGreen works after recreation too
+          
+        } catch (retryError) {
+          console.error('❌ Renderer recreation failed:', retryError);
+          throw retryError;
+        }
+      }
 
-      const beams = Beam.generateBeams(notes);
-      hideFlagsForBeamedNotes(beams as any);
-      beams.forEach(b => b.setContext(ctx).draw());
+      // Beam generation disabled - eighth notes will show individual flags instead
     } catch (error) {
       console.error('Error rendering staff:', error);
       // Fallback: try to render a simple version
@@ -705,7 +1288,14 @@ function hasNaturalGlyph(ns: StaveNote[]): boolean {
 
   currentBeats = MEASURE_BEATS;
   console.log('generateRandomLine(): set currentBeats', currentBeats);
-  renderStaff(currentBeats);   
+  
+  // Initialize new render state with generated notes
+  const timeSignature = { beats: MEASURE_BEATS, beatType: 4 };
+  initializeRenderState(notes, timeSignature);
+  
+  // Render using new system
+  renderStaffClean();
+  
   console.log('📝 Generated random notes:', { line, target, notesCount: notes.length });
   gaEvent('staff_generated', {
   clef: selectedClef,
@@ -797,31 +1387,40 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
 
     switch (gate) {
       case 'READY':
-        if (isRealNote(note) && canon(note) === target[i]) {
-          // additionally, block an immediate match if this is i===0 and equals previous first target
-          if (i === 0 && prevTargetFirst !== null && prevTargetFirst === target[0] && !haveGoneQuiet) {
-            // wait for genuine new attack
-            break;
+        const currentTargetIndex = renderState?.currentProgress || 0;
+        if (isRealNote(note) && currentTargetIndex < target.length) {
+          const targetLabel = line[currentTargetIndex] || '';
+          console.log('🎯 NOTE COMPARISON: Microphone detected:', note, '| Target:', targetLabel);
+          
+          if (canon(note) === target[currentTargetIndex]) {
+            // additionally, block an immediate match if this is the first note and equals previous first target
+            if (currentTargetIndex === 0 && prevTargetFirst !== null && prevTargetFirst === target[0] && !haveGoneQuiet) {
+              // wait for genuine new attack
+              break;
+            }
+            const matchedLabel = line[renderState?.currentProgress || 0] || '';
+            gaEvent('correct_note', {
+              index: renderState?.currentProgress || 0,
+              label: matchedLabel,
+              clef: selectedClef,
+              key: currentKeySig
+            });
+            
+            matchedFreq = freq;
+            lastNoteTime = Date.now();
+            
+            // Advance progress in new system
+            const hasMoreNotes = advanceProgress();
+            
+            // Re-render with new progress
+            renderStaffClean();
           }
-          const matchedIndex = i;
-    const matchedLabel = line[matchedIndex] || '';
-          gaEvent('correct_note', {
-      index: matchedIndex,
-      label: matchedLabel,
-      clef: selectedClef,
-      key: currentKeySig
-    });
-          markNoteGreen(notes[i]);
-          matchedFreq = freq;
-          lastNoteTime = Date.now();
-          i++;
-          renderStaff(currentBeats);
-          if (i === notes.length){
+          if (isGameComplete()){
             if (msreCount == -1){
               // Random Note Mode completion
               if (autoNext) {
                 generateRandomLine();
-                gate = 'WAIT_ATTACK'; haveGoneQuiet = false; matchedFreq = 0; i = 0;
+                gate = 'WAIT_ATTACK'; haveGoneQuiet = false; matchedFreq = 0;
                 deferNextFrame = true;
                 break;
               }
@@ -832,7 +1431,7 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
                 if (autoNext && randomSongMode) {
                   // Auto-advance to next song in Random Song Mode with Auto-Next ON
                   nextRandomSong().then(() => {
-                    gate = 'WAIT_ATTACK'; haveGoneQuiet = false; matchedFreq = 0; i = 0;
+                    gate = 'WAIT_ATTACK'; haveGoneQuiet = false; matchedFreq = 0;
                     deferNextFrame = true;
                   });
                   break;
@@ -884,42 +1483,75 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
 
 
 
-  // Store the transposition decision for the entire song
-  let songTransposition = 0;
-  let songTranspositionCalculated = false;
+  // Manual octave shifting for songs
+  let manualOctaveShift = 0;
 
   async function renderAnalysisLine() {
     if (!vfDiv) return;
+    
+    // Initialize or load measure
     if (msreCount == -1 || measures == undefined) {
       msreCount = 0;
-      await getMusicXML();
+      const parseSuccess = getMusicXML();
       
-      // Calculate transposition for the ENTIRE song when first loading
-      if (selectedClef !== 'treble' && !songTranspositionCalculated) {
-        // Collect ALL notes from ALL measures to analyze the complete song
-        const allSongNotes: StaveNote[] = [];
-        for (const measure of measures) {
-          allSongNotes.push(...measure.notes);
+      // If parsing failed or song was skipped (e.g., contains chords), try next song
+      if (!parseSuccess && randomSongMode) {
+        await nextRandomSong();
+        return;
+      }
+      
+      // No automatic transposition - user controls octave shifts manually
+    }
+    
+    if (!measures.length) {
+      console.log('No measures parsed from MusicXML');
+      return;
+    }
+
+    // Set up measure data
+    totalMsre = measures.length;
+    const currentMeasure = measures[msreCount];
+    notes = currentMeasure.notes;
+    currentKeySig = currentMeasure.key.split(' ')[0];
+    km = new KeyManager(currentKeySig);
+
+    // Debug: Log original notes before any transposition
+    console.log('🎼 Original notes from MusicXML:', notes.map(n => ({ 
+      keys: n.getKeys(), 
+      duration: n.getDuration(),
+      isRest: isRestNote(n),
+      rawDuration: n.getDuration(),
+      hasRestInDuration: n.getDuration().includes('r')
+    })));
+    
+    // Apply manual octave shifting
+    if (manualOctaveShift !== 0) {
+      console.log(`🎵 Applying manual octave shift of ${manualOctaveShift} octaves`);
+      notes = notes.map(note => {
+        // Don't transpose rests - they have no pitch, but center them on current clef
+        if (isRestNote(note)) {
+          const restNote = new StaveNote({
+            keys: [getCenterLineKey(selectedClef)], // Always center rests on current clef
+            duration: note.getDuration(),
+            clef: selectedClef,
+            autoStem: true
+          });
+          // Set rest properties
+          (restNote as any).rest = true;
+          (restNote as any).noteType = 'r';
+          (restNote as any).isRest = () => true;
+          Object.defineProperty(restNote, 'rest', {
+            value: true,
+            writable: false,
+            enumerable: true,
+            configurable: false
+          });
+          return restNote;
         }
         
-        songTransposition = determineOptimalTransposition(allSongNotes, 'treble', selectedClef);
-        songTranspositionCalculated = true;
-        console.log(`Analyzing ENTIRE song for ${selectedClef} clef: optimal transposition ${songTransposition} octaves (based on ${allSongNotes.length} total notes)`);
-      }
-    }
-    if (!measures.length) return alert('Nothing parsed');
-
-    totalMsre   = measures.length;
-    notes       = measures[msreCount].notes;
-    currentKeySig = measures[msreCount].key.split(' ')[0];
-    km          = new KeyManager(currentKeySig);
-
-    // Apply the song-wide transposition to this measure
-    if (songTransposition !== 0) {
-      notes = notes.map(note => {
         const originalKeys = note.getKeys();
         const transposedKeys = originalKeys.map(key => 
-          transposeNote(key, songTransposition)
+          transposeNote(key, manualOctaveShift)
         );
         
         return new StaveNote({
@@ -929,206 +1561,100 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
           autoStem: true
         });
       });
+    } else {
+      // No octave shift - recreate notes with current clef
+      notes = notes.map(note => {
+        if (isRestNote(note)) {
+          const restNote = new StaveNote({
+            keys: [getCenterLineKey(selectedClef)], // Always center rests on current clef
+            duration: note.getDuration(),
+            clef: selectedClef,
+            autoStem: true
+          });
+          // Set rest properties
+          (restNote as any).rest = true;
+          (restNote as any).noteType = 'r';
+          (restNote as any).isRest = () => true;
+          Object.defineProperty(restNote, 'rest', {
+            value: true,
+            writable: false,
+            enumerable: true,
+            configurable: false
+          });
+          return restNote;
+        }
+        
+        return new StaveNote({
+          keys: note.getKeys(),
+          duration: note.getDuration(),
+          clef: selectedClef,
+          autoStem: true
+        });
+      });
     }
 
-    // remember previous measure first target
+    // Prepare game state
     prevTargetFirst = target.length ? target[0] : null;
-    line = []; target = []; i = 0;
-    gate = 'WAIT_ATTACK'; // force a fresh note attack when switching measures
+    line = []; 
+    target = []; 
+    gate = 'WAIT_ATTACK';
     lastNoteTime = 0;
-    matchedFreq = 0; // avoid carry-over matching across measures
+    matchedFreq = 0;
     haveGoneQuiet = false;
     
+    // Build target arrays for game logic - only include playable notes (skip rests)
     for (let x = 0; x < notes.length; x++) {
-      const k = notes[x].keys[0];
-      line.push(k.replace('/', ''));
-      target.push(canon(k.replace('/', '')));
+      const note = notes[x];
+      if (!isRestNote(note)) {
+        const k = typeof note.getKeys === 'function' ? note.getKeys()[0] : (note as any).keys?.[0];
+        if (k) {
+          line.push(k.replace('/', ''));
+          target.push(canon(k.replace('/', '')));
+        }
+      }
     }
-
-    // --- ADAPT THE VOICE & STAVE TO TRUE DURATION ---
-    // Use time signature from MusicXML if available, otherwise calculate from notes
-    const currentMeasure = measures[msreCount];
-    let beats: number;
-    let beatValue: number;
     
+    console.log(`🎯 Target arrays built: ${line.length} playable notes out of ${notes.length} total positions`);
+    
+    // Get time signature
+    let timeSignature = { beats: 4, beatType: 4 }; // Default
     if (currentMeasure.timeSignature) {
-      beats = currentMeasure.timeSignature.beats;
-      beatValue = currentMeasure.timeSignature.beatType;
-      console.log('renderAnalysisLine(): using time signature from MusicXML', { beats, beatValue, msreCount });
+      timeSignature = currentMeasure.timeSignature;
     } else {
       // Fallback to calculating from note durations
       const beatsFloat = beatsFromNotes(notes);
-      beats = normalizeBeats(beatsFloat);
-      beatValue = 4;
-      console.log('renderAnalysisLine(): calculated beats from note durations', { beats, beatValue, msreCount });
+      timeSignature.beats = normalizeBeats(beatsFloat);
     }
     
-    currentBeats = beats;
-
-// Build the voice to match what will actually be drawn
-const voice = new Voice({ numBeats: beats, beatValue });
-if ((voice as any).setStrict) { (voice as any).setStrict(false); }
-else if ((voice as any).setMode && (Voice as any).Mode) { (voice as any).setMode((Voice as any).Mode.SOFT); }
-voice.addTickables(notes);
-
-// --- compute safe width (no cutoffs / no huge gaps) ---
-const fmt = new Formatter();
-fmt.joinVoices([voice]).preFormat();
-const minNotesWidth = fmt.getMinTotalWidth();
-
-vfDiv.innerHTML = '';
-const renderer = new Renderer(vfDiv, Renderer.Backends.SVG);
-renderer.resize(10, 140);
-const ctx = renderer.getContext();
-
-const leadIn    = measureLead(ctx, beats);
-const accCnt    = accidentalCount(currentKeySig);
-const heuristic = calcStaveWidth(notes, accCnt);
-const width     = Math.ceil(Math.max(heuristic,  leadIn + 20));
-
-renderer.resize(width, 140);
-// Make SVG responsive: set viewBox and fluid size
-const svgRoot = vfDiv.querySelector('svg');
-if (svgRoot) {
-  svgRoot.setAttribute('viewBox', `0 0 ${width} 140`);
-  svgRoot.setAttribute('preserveAspectRatio', 'xMinYMin meet');
-  (svgRoot as SVGSVGElement).style.width = '100%';
-  (svgRoot as SVGSVGElement).style.height = 'auto';
-  (svgRoot as SVGSVGElement).style.display = 'block';
-}
-const stave = new Stave(10, 20, width)
-  .addClef(selectedClef)
-  .addTimeSignature(`${beats}/4`)
-  .addKeySignature(currentKeySig);
-
-stave.setContext(ctx).draw();
-
-// 🔽 keep your accidental policy exactly as you implemented
-if (useKeyOnly) {
-  stripAccidentalsFromNotes(notes);
-} else if (!allowNaturals) {
-  stripAccidentalsFromNotes(notes);
-  addAccidentalsFromKeys(notes);
-} else {
-  Accidental.applyAccidentals([voice], currentKeySig);
-}
-
-new Formatter().joinVoices([voice]).formatToStave([voice], stave);
-voice.draw(ctx, stave);
-
-const beams = Beam.generateBeams(notes);
-hideFlagsForBeamedNotes(beams as any);
-beams.forEach(b => b.setContext(ctx).draw());
-// After drawing, make SVG responsive
-const svgRoot2 = vfDiv.querySelector('svg') as SVGSVGElement | null;
-if (svgRoot2) {
-  svgRoot2.setAttribute('viewBox', `0 0 ${width} 140`);
-  svgRoot2.setAttribute('preserveAspectRatio', 'xMinYMin meet');
-  svgRoot2.style.width = '100%';
-  svgRoot2.style.height = 'auto';
-  svgRoot2.style.display = 'block';
-}
-  }
+    currentBeats = timeSignature.beats;
+    
+    // Initialize new rendering system
+    initializeRenderState(notes, timeSignature);
+    
+    // Render using new clean system
+    renderStaffClean();
+    }
 
   async function clefchanged(){
     if (msreCount == -1){
       generateRandomLine();
     } else {
-      await getMusicXML();
+      console.log(`🎵 Clef changed to ${selectedClef}`);
+      getMusicXML();
       renderAnalysisLine();
     }
   }
 
   // Track previous clef for transposition
   let previousClef: Clef = selectedClef;
-  
-  // Auto-transpose function with smart octave detection
-  function analyzeNoteRange(notes: StaveNote[]): { minOctave: number, maxOctave: number, avgOctave: number } {
-    const octaves = notes.map(note => {
-      const key = note.getKeys()[0];
-      const octave = parseInt(key.split('/')[1]);
-      return octave;
-    }).filter(oct => !isNaN(oct));
-    
-    if (octaves.length === 0) return { minOctave: 4, maxOctave: 4, avgOctave: 4 };
-    
-    const minOctave = Math.min(...octaves);
-    const maxOctave = Math.max(...octaves);
-    const avgOctave = octaves.reduce((sum, oct) => sum + oct, 0) / octaves.length;
-    
-    return { minOctave, maxOctave, avgOctave };
-  }
 
-  function determineOptimalTransposition(notes: StaveNote[], fromClef: Clef, toClef: Clef): number {
-    if (fromClef === toClef) return 0;
-    
-    // Define the center line for each clef (in terms of note + octave)
-    const CLEF_CENTERS = {
-      treble: { note: 'B', octave: 4 }, // B4 is center line of treble staff
-      bass: { note: 'D', octave: 3 },   // D3 is center line of bass staff  
-      alto: { note: 'C', octave: 4 }    // C4 is center line of alto staff
-    };
-    
-    // Convert note+octave to a numerical value for distance calculation
-    function noteToNumber(noteKey: string): number {
-      const parts = noteKey.split('/');
-      if (parts.length !== 2) return 0;
-      
-      const notePart = parts[0].toLowerCase();
-      const octave = parseInt(parts[1]);
-      
-      // Convert note letter to semitone (C=0, D=2, E=4, F=5, G=7, A=9, B=11)
-      const NOTE_SEMITONES: Record<string, number> = {
-        'c': 0, 'c#': 1, 'db': 1,
-        'd': 2, 'd#': 3, 'eb': 3, 
-        'e': 4, 'fb': 4,
-        'f': 5, 'f#': 6, 'gb': 6,
-        'g': 7, 'g#': 8, 'ab': 8,
-        'a': 9, 'a#': 10, 'bb': 10,
-        'b': 11, 'cb': 11
-      };
-      
-      const semitone = NOTE_SEMITONES[notePart] || 0;
-      return octave * 12 + semitone;
-    }
-    
-    // Calculate center position for target clef
-    const center = CLEF_CENTERS[toClef];
-    const centerValue = noteToNumber(`${center.note.toLowerCase()}/${center.octave}`);
-    
-    // Test different transposition options (-2, -1, 0, +1, +2 octaves)
-    const transpositionOptions = [-2, -1, 0, 1, 2];
-    let bestTransposition = 0;
-    let bestAverageDistance = Infinity;
-    
-    for (const octaveShift of transpositionOptions) {
-      let totalDistance = 0;
-      let validNotes = 0;
-      
-      for (const note of notes) {
-        const originalKey = note.getKeys()[0];
-        const transposedKey = transposeNote(originalKey, octaveShift);
-        const noteValue = noteToNumber(transposedKey);
-        
-        if (noteValue > 0) { // Valid note
-          const distance = Math.abs(noteValue - centerValue);
-          totalDistance += distance;
-          validNotes++;
-        }
-      }
-      
-      if (validNotes > 0) {
-        const averageDistance = totalDistance / validNotes;
-        
-        if (averageDistance < bestAverageDistance) {
-          bestAverageDistance = averageDistance;
-          bestTransposition = octaveShift;
-        }
-      }
-    }
-    
-    return bestTransposition;
-  }
+
+
+
+
+
+  
+  // Simple octave transposition function (keeps the existing transposeNote function)
 
   function transposeNote(noteKey: string, octaveShift: number): string {
     const parts = noteKey.split('/');
@@ -1141,28 +1667,8 @@ if (svgRoot2) {
     return noteKey;
   }
 
-  // Watch for clef changes and auto-transpose if in song mode
-  $: if (selectedClef !== previousClef && randomSongMode && notes.length > 0 && measures?.length > 0) {
-    // Reset transposition calculation and recalculate for entire song
-    songTranspositionCalculated = false;
-    
-    // Collect ALL notes from ALL measures to analyze the complete song
-    const allSongNotes: StaveNote[] = [];
-    for (const measure of measures) {
-      allSongNotes.push(...measure.notes);
-    }
-    
-    const octaveShift = determineOptimalTransposition(allSongNotes, 'treble', selectedClef);
-    songTransposition = octaveShift;
-    songTranspositionCalculated = true;
-    
-    console.log(`Clef changed from ${previousClef} to ${selectedClef}, analyzing ENTIRE song: optimal transposition ${octaveShift} octaves (based on ${allSongNotes.length} total notes)`);
-    
-    // Re-render current measure with new transposition
-    renderAnalysisLine();
-    
-    previousClef = selectedClef;
-  } else {
+  // Update previous clef tracking
+  $: if (selectedClef !== previousClef) {
     previousClef = selectedClef;
   }
 
@@ -1176,8 +1682,68 @@ if (svgRoot2) {
   let xmlText:string = '';
   let measures: any;
 
+  function hasChords(measures: any[]): boolean {
+    // Check if any note in any measure is a chord (has multiple keys)
+    for (let measureIndex = 0; measureIndex < measures.length; measureIndex++) {
+      const measure = measures[measureIndex];
+      for (let noteIndex = 0; noteIndex < measure.notes.length; noteIndex++) {
+        const note = measure.notes[noteIndex];
+        if (!isRestNote(note)) {
+          const keys = note.getKeys();
+          if (keys.length > 1) {
+            console.log(`🔍 CHORD DETECTED in "${currentSongTitle}": Measure ${measureIndex + 1}, Note ${noteIndex + 1} has ${keys.length} keys:`, keys);
+            return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
   function getMusicXML() {
-    measures = parseMusicXML(xmlText, selectedClef);
+    try {
+      console.log(`🎵 ANALYZING SONG: "${currentSongTitle}"`);
+      
+      measures = parseMusicXML(xmlText, selectedClef);
+      if (!measures || measures.length === 0) {
+        console.log(`❌ SKIPPED "${currentSongTitle}": No measures parsed from MusicXML`);
+        measures = [];
+        return false;
+      }
+      
+      console.log(`📊 Song "${currentSongTitle}" has ${measures.length} measures`);
+      
+      // Log detailed measure analysis
+      measures.forEach((measure: any, index: number) => {
+        const noteCount = measure.notes.length;
+        const restCount = measure.notes.filter((n: any) => isRestNote(n)).length;
+        const actualNotes = noteCount - restCount;
+        console.log(`  📏 Measure ${index + 1}: ${noteCount} total positions (${actualNotes} notes, ${restCount} rests)`);
+      });
+      
+      // Check if any measure has more than 12 note positions - if so, skip this song
+      // Note: m.notes.length already represents note positions (chords are single StaveNote objects)
+      const maxNotePositionsPerMeasure = Math.max(...measures.map((m: any) => m.notes.length));
+      if (maxNotePositionsPerMeasure > 12) {
+        console.log(`❌ SKIPPED "${currentSongTitle}": ${maxNotePositionsPerMeasure} note positions in a measure (max: 12)`);
+        measures = [];
+        return false;
+      }
+      
+      // Check if song contains chords/stacked notes - if so, skip this song
+      if (hasChords(measures)) {
+        console.log(`❌ SKIPPED "${currentSongTitle}": contains chords/stacked notes`);
+        measures = [];
+        return false;
+      }
+      
+      console.log(`✅ ACCEPTED "${currentSongTitle}": Song meets all criteria`);
+      return true;
+    } catch (error) {
+      console.log(`❌ SKIPPED "${currentSongTitle}": Error parsing MusicXML -`, error);
+      measures = [];
+      return false;
+    }
   }
 
   // Extract title and composer from MusicXML
@@ -1265,37 +1831,100 @@ if (svgRoot2) {
     randomSongMode = true;
     showSongDropdown = true;
     showNoteDropdown = false;
+    isLoadingSong = true;
 
-    const row = await fetchRandomXMLFromPool();
-    xmlText = row.musicxml;
+    // Try up to 10 songs to find one without chords
+    let attempts = 0;
+    const maxAttempts = 10;
+    
+    while (attempts < maxAttempts) {
+      try {
+        const row = await fetchRandomXMLFromPool();
+        xmlText = row.musicxml;
 
-    // ⬇️ NEW: derive title/composer from the XML itself
-    const meta = extractMetaFromMusicXML(xmlText);
-    currentSongTitle = meta.title || '(Untitled)';
-    currentSongComposer = meta.composer || '';
+        // ⬇️ NEW: derive title/composer from the XML itself
+        const meta = extractMetaFromMusicXML(xmlText);
+        const tempTitle = meta.title || '(Untitled)';
+        const tempComposer = meta.composer || '';
 
-    msreCount = -1;
-    songTransposition = 0;
-    songTranspositionCalculated = false;
+        msreCount = -1;
+        manualOctaveShift = 0;
 
-    renderAnalysisLine();
-    gaEvent('random_song_mode_started', { source: 'xml_pool' });
+        // Try to parse and validate the song
+        const parseSuccess = getMusicXML();
+        if (parseSuccess) {
+          // Only set title/composer after successful validation
+          currentSongTitle = tempTitle;
+          currentSongComposer = tempComposer;
+          isLoadingSong = false;
+          renderAnalysisLine();
+          gaEvent('random_song_mode_started', { source: 'xml_pool' });
+          return;
+        }
+        
+        // Song was filtered out, try again
+        attempts++;
+        console.log(`🔄 Attempt ${attempts}/${maxAttempts}: "${tempTitle}" was rejected, trying another song`);
+        
+      } catch (error) {
+        console.error('Error loading random song:', error);
+        attempts++;
+      }
+    }
+    
+    // If we get here, we couldn't find a suitable song
+    isLoadingSong = false;
+    console.log('Could not find a suitable song without chords after', maxAttempts, 'attempts.');
+    switchToRandomNoteMode();
   }
 
   async function nextRandomSong() {
-    const row = await fetchRandomXMLFromPool();
-    xmlText = row.musicxml;
+    isLoadingSong = true;
+    // Clear current song info while loading
+    currentSongTitle = '';
+    currentSongComposer = '';
+    
+    // Try up to 10 songs to find one without chords
+    let attempts = 0;
+    const maxAttempts = 10;
+    
+    while (attempts < maxAttempts) {
+      try {
+        const row = await fetchRandomXMLFromPool();
+        xmlText = row.musicxml;
 
-    const meta = extractMetaFromMusicXML(xmlText);
-    currentSongTitle = meta.title || '(Untitled)';
-    currentSongComposer = meta.composer || '';
+        const meta = extractMetaFromMusicXML(xmlText);
+        const tempTitle = meta.title || '(Untitled)';
+        const tempComposer = meta.composer || '';
 
-    msreCount = -1;
-    songTransposition = 0;
-    songTranspositionCalculated = false;
+        msreCount = -1;
+        manualOctaveShift = 0;
 
-    renderAnalysisLine();
-    gaEvent('next_random_song', { source: 'xml_pool' });
+        // Try to parse and validate the song
+        const parseSuccess = getMusicXML();
+        if (parseSuccess) {
+          // Only set title/composer after successful validation
+          currentSongTitle = tempTitle;
+          currentSongComposer = tempComposer;
+          isLoadingSong = false;
+          renderAnalysisLine();
+          gaEvent('next_random_song', { source: 'xml_pool' });
+          return;
+        }
+        
+        // Song was filtered out, try again
+        attempts++;
+        console.log(`🔄 Next song attempt ${attempts}/${maxAttempts}: "${tempTitle}" was rejected, trying another song`);
+        
+      } catch (error) {
+        console.error('Error loading next random song:', error);
+        attempts++;
+      }
+    }
+    
+    // If we get here, we couldn't find a suitable song
+    isLoadingSong = false;
+    console.log('Could not find a suitable song without chords after', maxAttempts, 'attempts.');
   }
 
   function switchToRandomNoteMode() {
@@ -1304,6 +1933,7 @@ if (svgRoot2) {
     showSongDropdown = false;
     currentSongTitle = '';
     currentSongComposer = '';
+    isLoadingSong = false;
     gaEvent('random_note_mode');
     generateRandomLine();
   }
@@ -1334,8 +1964,21 @@ if (svgRoot2) {
     
     // Reset the current song by restarting from the beginning
     msreCount = -1;
-    songTransposition = 0;
-    songTranspositionCalculated = false;
+    manualOctaveShift = 0;
+    renderAnalysisLine();
+  }
+
+  function shiftOctaveUp() {
+    if (!randomSongMode) return;
+    manualOctaveShift += 1;
+    console.log(`🎵 Shifted octave up: ${manualOctaveShift}`);
+    renderAnalysisLine();
+  }
+
+  function shiftOctaveDown() {
+    if (!randomSongMode) return;
+    manualOctaveShift -= 1;
+    console.log(`🎵 Shifted octave down: ${manualOctaveShift}`);
     renderAnalysisLine();
   }
 
@@ -1467,59 +2110,32 @@ $: if (prefsLoaded) {
   schedulePrefsSave();
 }
 
-// Hide flags on notes that are part of a beam (VexFlow normally does this,
-// but some builds can still render flags; force-disable for beamed notes)
-function hideFlagsForBeamedNotes(beams: any[]) {
-  (beams || []).forEach((b: any) => {
-    const ns: any[] = b?.notes || b?.getNotes?.() || [];
-    ns.forEach((n: any) => {
-      try {
-        n.render_flag = false;
-        if (n.flag) n.flag = undefined;
-        // force-disable flag drawing on this note instance
-        if (typeof n.drawFlag === 'function') {
-          n.drawFlag = () => {};
-        }
-        console.log('hideFlagsForBeamedNotes(): disabled flag for', n.getDuration?.());
-      } catch {}
-    });
-  });
-  // Fallback: if any beam exists, disable flags on all 8th/16th notes in the measure
-  if ((beams || []).length > 0) {
-    (notes as any[]).forEach((n: any) => {
-      const dur = n.getDuration?.() || n.getDuration?.();
-      if (typeof dur === 'string' && (/^(8|16)/.test(dur))) {
-        try {
-          n.render_flag = false;
-          if (n.flag) n.flag = undefined;
-          if (typeof n.drawFlag === 'function') n.drawFlag = () => {};
-          console.log('fallback flag disable on', dur);
-        } catch {}
-      }
-    });
-  }
-}
+// DISABLED: Hide flags on notes that are part of a beam
+// function hideFlagsForBeamedNotes(beams: any[]) {
+//   // Function disabled - beaming has been removed
+//   return;
+// }
 
 // Piano keyboard integration
 function handlePianoNote(note: string, frequency: number) {
   console.log('🎹 Piano key clicked:', note);
   
-  // The piano sends just the note name (C, D#, etc.) without octave
-  // We need to match this against the target note regardless of octave
-  //gaEvent('piano key pressed', {note});
-  // Update the display to show the piano note was played
+  // Update the display
   freq = Math.round(frequency);
   lastGoodFreq = frequency;
   lastHeard = Date.now();
   lastUpdate = lastHeard;
   
-  // Extract the note name from the target (e.g., "C4" -> "C", "D#5" -> "D#")
-  if (i >= line.length || !line[i]) {
-    console.log('🎹 Piano note played but no target note available');
+  // Check if we have a current playable note to match
+  const currentNote = getCurrentPlayableNote();
+  if (!currentNote) {
+    console.log('🎹 Piano note played but no playable target note available');
     return;
   }
-  const targetNoteName = line[i].replace(/\d+$/, '') || '';
-  console.log('🎯 Target note:', line[i], '→ extracted:', targetNoteName);
+  
+  // Extract the note name from the target
+  const targetNoteName = line[renderState?.currentProgress || 0]?.replace(/\d+$/, '') || '';
+  console.log('🎯 Target note:', targetNoteName, '→ extracted:', targetNoteName);
   
   // Normalize note names for comparison (handle both # and ♯ symbols)
   const normalizeNote = (noteStr: string) => noteStr.replace(/♯/g, '#').replace(/♭/g, 'b');
@@ -1562,60 +2178,35 @@ function handlePianoNote(note: string, frequency: number) {
   const pianoEquivalents = getEnharmonicEquivalents(normalizedPianoNote);
   const targetEquivalents = getEnharmonicEquivalents(normalizedTargetNote);
   
-  console.log('🔄 Comparing:', normalizedPianoNote, 'vs', normalizedTargetNote);
-  console.log('🎵 Piano equivalents:', pianoEquivalents, 'Target equivalents:', targetEquivalents);
+  console.log('🎯 NOTE COMPARISON: Piano played:', normalizedPianoNote, '| Target:', normalizedTargetNote);
   
   // Check if the piano note matches the target note name (ignoring octave)
-  // Also check enharmonic equivalents
   const isMatch = pianoEquivalents.some(p => targetEquivalents.includes(p));
   if (isMatch) {
-    const matchedIndex = i;
-    const matchedLabel = line[matchedIndex] || '';
+    const matchedLabel = targetNoteName;
     gaEvent('correct_note', {
-      index: matchedIndex,
+      index: renderState?.currentProgress || 0,
       label: matchedLabel,
       clef: selectedClef,
       key: currentKeySig
     });
     
-    // Mark the note as green
-    markNoteGreen(notes[i]);
-    
-    // Update state
+    // Update state using new system
     matchedFreq = freq;
     lastNoteTime = Date.now();
-    i++;
     
-    // Re-render the staff to show the green note
-    // Use a fresh copy of notes to avoid VexFlow conflicts
-    const notesCopy = notes.map((note, idx) => {
-      if (idx === matchedIndex) {
-        // Create a new note object with green styling
-        const newNote = new StaveNote({
-          keys: note.getKeys(),
-          duration: note.getDuration(),
-          clef: selectedClef,
-          autoStem: true
-        });
-        newNote.setStyle({ fillStyle: GREEN, strokeStyle: GREEN });
-        return newNote;
-      }
-      return note;
-    });
+    // Advance progress in new system
+    const hasMoreNotes = advanceProgress();
     
-    // Temporarily replace notes array and re-render
-    const originalNotes = notes;
-    notes = notesCopy;
-    renderStaff(currentBeats);
-    notes = originalNotes;
+    // Re-render with new progress
+    renderStaffClean();
     
-    if (i === notes.length) {
+    if (isGameComplete()) {
       if (msreCount == -1) {
         generateRandomLine();
         gate = 'WAIT_ATTACK';
         haveGoneQuiet = false;
         matchedFreq = 0;
-        i = 0;
         deferNextFrame = true;
       } else {
         if (msreCount == totalMsre - 1) {
@@ -1860,10 +2451,17 @@ function handlePianoNote(note: string, frequency: number) {
 
   <!-- Staff Section -->
   <section class="staff-section">
-    {#if randomSongMode && currentSongTitle}
+    {#if randomSongMode && currentSongTitle && measures && measures.length > 0}
       <div class="song-info">
         <h3 class="song-title">{currentSongTitle}</h3>
         <p class="song-composer">{currentSongComposer}</p>
+      </div>
+    {/if}
+    
+    {#if isLoadingSong}
+      <div class="loading-indicator">
+        <div class="spinner"></div>
+        <p class="loading-text">Searching for song...</p>
       </div>
     {/if}
     
@@ -1890,6 +2488,15 @@ function handlePianoNote(note: string, frequency: number) {
               <span class="button-icon">🔄</span>
               Reset Song
             </button>
+            <div class="octave-controls">
+              <button on:click={shiftOctaveUp} class="octave-button up">
+                <span class="octave-icon">⬆️</span>
+              </button>
+              <button on:click={shiftOctaveDown} class="octave-button down">
+                <span class="octave-icon">⬇️</span>
+              </button>
+              <span class="octave-label">Octave</span>
+            </div>
           {/if}
         </div>
     </div>
@@ -2350,6 +2957,95 @@ function handlePianoNote(note: string, frequency: number) {
 
   .button-icon {
     font-size: 1.2rem;
+  }
+
+  /* Octave Controls */
+  .octave-controls {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.25rem;
+    background: linear-gradient(135deg, #f3f4f6 0%, #e5e7eb 100%);
+    border: 2px solid #d1d5db;
+    border-radius: 0.75rem;
+    padding: 0.75rem;
+    min-width: 80px;
+  }
+
+  .octave-button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.5rem;
+    height: 2.5rem;
+    background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
+    border: 2px solid #cbd5e1;
+    border-radius: 0.5rem;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    padding: 0;
+  }
+
+  .octave-button:hover {
+    background: linear-gradient(135deg, #f1f5f9 0%, #e2e8f0 100%);
+    border-color: #94a3b8;
+    transform: translateY(-1px);
+  }
+
+  .octave-button:active {
+    transform: translateY(0);
+  }
+
+  .octave-button.up {
+    margin-bottom: 0.125rem;
+  }
+
+  .octave-button.down {
+    margin-top: 0.125rem;
+  }
+
+  .octave-icon {
+    font-size: 1rem;
+    line-height: 1;
+  }
+
+  .octave-label {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: #64748b;
+    text-align: center;
+    margin-top: 0.25rem;
+  }
+
+  /* Loading Indicator */
+  .loading-indicator {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1rem;
+    padding: 2rem;
+    text-align: center;
+  }
+
+  .spinner {
+    width: 3rem;
+    height: 3rem;
+    border: 4px solid #e5e7eb;
+    border-top: 4px solid #667eea;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+  }
+
+  @keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+  }
+
+  .loading-text {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: #667eea;
+    margin: 0;
   }
 
   /* Pitch Display */
