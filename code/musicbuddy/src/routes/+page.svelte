@@ -107,14 +107,37 @@ let allowFlats    = true;
 
 
 
+// Manual key signature mapping since VexFlow KeyManager might not handle extreme keys correctly
+function getKeyAccidentals(keySig: string): Record<string, '#'|'b'|undefined> {
+  const keyAccMap: Record<string, Record<string, '#'|'b'|undefined>> = {
+    'C': {},
+    'G': { f: '#' },
+    'D': { f: '#', c: '#' },
+    'A': { f: '#', c: '#', g: '#' },
+    'E': { f: '#', c: '#', g: '#', d: '#' },
+    'B': { f: '#', c: '#', g: '#', d: '#', a: '#' },
+    'F#': { f: '#', c: '#', g: '#', d: '#', a: '#', e: '#' },
+    'C#': { f: '#', c: '#', g: '#', d: '#', a: '#', e: '#', b: '#' },
+    'F': { b: 'b' },
+    'Bb': { b: 'b', e: 'b' },
+    'Eb': { b: 'b', e: 'b', a: 'b' },
+    'Ab': { b: 'b', e: 'b', a: 'b', d: 'b' },
+    'Db': { b: 'b', e: 'b', a: 'b', d: 'b', g: 'b' },
+    'Gb': { b: 'b', e: 'b', a: 'b', d: 'b', g: 'b', c: 'b' },
+    'Cb': { b: 'b', e: 'b', a: 'b', d: 'b', g: 'b', c: 'b', f: 'b' }
+  };
+  
+  return keyAccMap[keySig] || {};
+}
+
 // track the in-bar state for each letter+octave
 type AccType = 'nat' | 'sh' | 'fl';
 let barLedger: Record<string, AccType> = {};
 
-
 const accFromKey = (L: string): AccType => {
-  if (!km) return 'nat'; // Safety guard for uninitialized KeyManager
-  const a = km.selectNote(L).accidental as '#'|'b'|undefined;
+  if (!currentKeySig || !L) return 'nat'; // Safety guard for uninitialized key signature or letter
+  const keyAcc = getKeyAccidentals(currentKeySig);
+  const a = keyAcc[L.toLowerCase()];
   return a === '#' ? 'sh' : a === 'b' ? 'fl' : 'nat';
 };
 const getLedger = (L: string, o: number): AccType =>
@@ -1180,8 +1203,18 @@ function hasNaturalGlyph(ns: StaveNote[]): boolean {
   km = new KeyManager(currentKeySig);
 
   const OCTS = CLEF_RANGES[selectedClef];
-  const keyAcc: Record<string, '#'|'b'|undefined> =
+  const keyAcc = getKeyAccidentals(currentKeySig);
+  
+  // Debug: Compare manual mapping vs VexFlow KeyManager
+  const vexFlowKeyAcc: Record<string, '#'|'b'|undefined> =
     Object.fromEntries(NOTE_LETTERS.map(L => [L, km.selectNote(L).accidental as any]));
+  
+  console.log('🔍 KEY SIGNATURE DEBUG:', {
+    keySig: currentKeySig,
+    manualMapping: keyAcc,
+    vexFlowMapping: vexFlowKeyAcc,
+    discrepancies: NOTE_LETTERS.filter(L => keyAcc[L] !== vexFlowKeyAcc[L])
+  });
 
   const MAX_OUTER = 40;                 // whole-bar retries
   for (let attempt = 0; attempt < MAX_OUTER; attempt++) {
@@ -1205,15 +1238,49 @@ function hasNaturalGlyph(ns: StaveNote[]): boolean {
       for (let tries = 0; tries < MAX_INNER; tries++) {
         L = pick(NOTE_LETTERS);
         o = pick(OCTS);
+        
+        // Debug: Check if L is properly set
+        if (!L) {
+          console.error('🚨 CRITICAL ERROR: L is undefined!', {
+            tries,
+            NOTE_LETTERS,
+            pickedL: L,
+            OCTS,
+            pickedO: o
+          });
+          continue;
+        }
 
         if (useKeyOnly) {
-          const spelled = km.selectNote(L);
-          const pretty  = spelled.accidental
-            ? `${spelled.note[0].toUpperCase()}${spelled.accidental === '#' ? '♯' : '♭'}${o}`
-            : `${spelled.note.toUpperCase()}${o}`;
+          // Use the keyAcc object that's already built at the top of this function
+          const accidental = keyAcc[L];
+          
+          const pretty = accidental
+            ? `${L.toUpperCase()}${accidental === '#' ? '♯' : '♭'}${o}`
+            : `${L.toUpperCase()}${o}`;
+          
+          console.log('🔍 KEY-ONLY DEBUG:', {
+            originalLetter: L,
+            selectedKeySig: currentKeySig,
+            keyAccidentals: keyAcc,
+            noteAccidental: accidental,
+            prettyDisplay: pretty,
+            canonValue: canon(pretty),
+            finalKeyStr: accidental ? `${L}${accidental}/${o}` : `${L}/${o}`
+          });
+          
           line.push(pretty);
           target.push(canon(pretty));
-          keyStr    = `${L}/${o}`;            // bare, no glyphs
+          
+          // Build keyStr with the proper accidental for VexFlow
+          if (accidental === '#') {
+            keyStr = `${L}#/${o}`;
+          } else if (accidental === 'b') {
+            keyStr = `${L}b/${o}`;
+          } else {
+            keyStr = `${L}/${o}`;            // no accidental needed
+          }
+          
           resulting = accFromKey(L);
           break;
         }
@@ -1237,11 +1304,14 @@ function hasNaturalGlyph(ns: StaveNote[]): boolean {
           L = pick(letters);
         } else if (alter === 'sharp') {
           letters = NOTE_LETTERS.filter(x => keyAcc[x] !== '#');
+          if (!letters.length) continue; // All letters are sharp in key
           L = pick(letters);
         } else if (alter === 'flat') {
           letters = NOTE_LETTERS.filter(x => keyAcc[x] !== 'b');
+          if (!letters.length) continue; // All letters are flat in key
           L = pick(letters);
         }
+        // For alter === 'none', L is already set from the initial pick(NOTE_LETTERS) above
 
         // what accidental TYPE will this pitch be?
         const desired: AccType =
@@ -1270,6 +1340,17 @@ function hasNaturalGlyph(ns: StaveNote[]): boolean {
         }
 
         // pretty text & target use the sounding pitch
+        if (!L) {
+          console.error('🚨 CRITICAL ERROR: L is undefined before spellRoot creation!', {
+            alter,
+            tries,
+            letters,
+            keyAcc,
+            allowedFilters: { allowNaturals, allowSharps, allowFlats }
+          });
+          continue;
+        }
+        
         const spellRoot = alter === 'sharp' ? `${L}#`
                          : alter === 'flat' ? `${L}b`
                          : L;
@@ -1311,7 +1392,14 @@ function hasNaturalGlyph(ns: StaveNote[]): boolean {
   // Render using new system
   renderStaffClean();
   
-  console.log('📝 Generated random notes:', { line, target, notesCount: notes.length });
+  console.log('📝 Generated random notes:', { 
+    line, 
+    target, 
+    notesCount: notes.length,
+    useKeyOnly,
+    currentKeySig,
+    lineTargetPairs: line.map((l, i) => ({ display: l, canon: target[i] }))
+  });
   gaEvent('staff_generated', {
   clef: selectedClef,
   key: currentKeySig,
@@ -1453,6 +1541,15 @@ let lastAssumedOctave = '';       // Track when we assume an octave for note mat
           const targetLabel = line[currentTargetIndex] || '';
           console.log('🎯 NOTE COMPARISON: Microphone detected:', note, '| Target:', targetLabel);
           console.log('🎯 Target array value:', target[currentTargetIndex], '| Canon of note:', canon(note));
+          console.log('🎯 KEY-ONLY DEBUG INFO:', {
+            useKeyOnly,
+            currentKeySig,
+            targetIndex: currentTargetIndex,
+            expectedTargetCanon: target[currentTargetIndex],
+            actualNoteCanon: canon(note),
+            targetDisplay: targetLabel,
+            noteDetected: note
+          });
           
           // Check if notes match ignoring octave
           if (notesMatchIgnoringOctave(note, targetLabel)) {
@@ -2646,35 +2743,11 @@ function handlePianoNote(note: string, frequency: number) {
 </script>
 
 <div class="main-container">
-  <!-- Header Section -->
+  <!-- Compact Header -->
   <header class="app-header">
     <h1 class="app-title">Music Buddy</h1>
-    <p class="app-subtitle">Interactive music learning with real-time pitch detection</p>
   </header>
 
-  <!-- Auth UI -->
-  <section class="auth-section">
-    {#if userEmail}
-      <div class="auth-info">
-        <span class="auth-label">Signed in as:</span>
-        <span class="auth-email">{userEmail}</span>
-        <button on:click={signOut} class="auth-button signout">Sign out</button>
-      </div>
-    {:else}
-      <div class="auth-form">
-        <input
-          class="auth-input"
-          type="email"
-          bind:value={emailInput}
-          placeholder="you@example.com"
-          aria-label="Email address"
-        />
-        <button on:click={signInWithEmail} class="auth-button signin">
-          Sign in (Email)
-        </button>
-      </div>
-    {/if}
-  </section>
 
   <!-- Mode Selection -->
   <section class="mode-selection">
@@ -2687,7 +2760,7 @@ function handlePianoNote(note: string, frequency: number) {
           on:click={toggleSongDropdown}
         >
           <span class="mode-icon">🎵</span>
-          Random Song Mode (WIP)
+          Random Song Mode
           <span class="dropdown-arrow">▼</span>
         </button>
         
@@ -2889,7 +2962,7 @@ function handlePianoNote(note: string, frequency: number) {
         {#if measures && measures.length > 0}
           {@const songKey = measures[0].key.split(' ')[0]}
           {@const keySignature = (() => {
-            const keyMap = {
+            const keyMap: Record<string, string> = {
               'C': '♮', 'Am': '♮',
               'G': '1♯', 'Em': '1♯',
               'D': '2♯', 'Bm': '2♯', 
@@ -2906,7 +2979,7 @@ function handlePianoNote(note: string, frequency: number) {
               'Gb': '6♭', 'Ebm': '6♭',
               'Cb': '7♭', 'Abm': '7♭'
             };
-            return keyMap[songKey] || songKey;
+            return keyMap[songKey as string] || songKey;
           })()}
           <p class="song-key">Key: {songKey} ({keySignature})</p>
         {/if}
@@ -3035,76 +3108,6 @@ function handlePianoNote(note: string, frequency: number) {
 </div>
 
 <style>
-  /* Auth Section */
-  .auth-section {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-    padding: 1rem 2rem;
-    margin-bottom: 2rem;
-    border-radius: 1rem;
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-  }
-
-  .auth-info, .auth-form {
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    justify-content: center;
-    color: white;
-    flex-wrap: wrap;
-    width: 100%;
-  }
-
-  .auth-label {
-    font-size: 0.9rem;
-    opacity: 0.9;
-  }
-
-  .auth-email {
-    font-weight: 600;
-    background: rgba(255, 255, 255, 0.2);
-    padding: 0.25rem 0.75rem;
-    border-radius: 1rem;
-  }
-
-  .auth-input {
-    padding: 0.5rem 1rem;
-    border: 2px solid rgba(255, 255, 255, 0.35);
-    border-radius: 0.5rem;
-    font-size: 0.9rem;
-    min-width: 0;
-    width: min(420px, 100%);
-    background: rgba(255, 255, 255, 0.12);
-    color: #fff;
-    transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.2s ease;
-  }
-
-  .auth-input::placeholder {
-    color: rgba(255, 255, 255, 0.85);
-  }
-
-  .auth-input:focus {
-    outline: none;
-    border-color: rgba(255, 255, 255, 0.95);
-    background: rgba(255, 255, 255, 0.18);
-    box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.25);
-  }
-
-  .auth-button {
-    padding: 0.5rem 1.5rem;
-    border: 2px solid rgba(255, 255, 255, 0.3);
-    border-radius: 0.5rem;
-    background: rgba(255, 255, 255, 0.1);
-    color: white;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.2s ease;
-    max-width: 100%;
-  }
-
-  .auth-button:hover {
-    background: rgba(255, 255, 255, 0.2);
-    border-color: rgba(255, 255, 255, 0.5);
-  }
 
   /* Main Container */
   .main-container {
@@ -3113,27 +3116,21 @@ function handlePianoNote(note: string, frequency: number) {
     padding: 0 2rem;
   }
 
-  /* Header */
+  /* Compact Header */
   .app-header {
     text-align: center;
-    margin-bottom: 3rem;
-    padding: 2rem 0;
+    margin-bottom: 1.5rem;
+    padding: 1rem 0 0.5rem 0;
   }
 
   .app-title {
-    font-size: 3.5rem;
-    font-weight: 800;
+    font-size: 2rem;
+    font-weight: 700;
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
-    margin-bottom: 0.5rem;
-  }
-
-  .app-subtitle {
-    font-size: 1.2rem;
-    color: #6b7280;
-    font-weight: 500;
+    margin: 0;
   }
 
   /* Mode Selection */
@@ -3736,7 +3733,7 @@ function handlePianoNote(note: string, frequency: number) {
     }
     
     .app-title {
-      font-size: 2.5rem;
+      font-size: 1.75rem;
     }
     
     .mode-selection,
@@ -3780,18 +3777,15 @@ function handlePianoNote(note: string, frequency: number) {
   /* Ultra-narrow phones */
   @media (max-width: 420px) {
     .main-container { padding: 0 0.5rem; }
-    .app-title { font-size: clamp(1.8rem, 9vw, 2.3rem); }
-    .app-subtitle { font-size: 0.95rem; }
+    .app-title { font-size: clamp(1.4rem, 8vw, 1.8rem); }
     .mode-selection,
     .staff-section,
     .pitch-display,
     .metronome-section { padding: 1rem; }
     .toggle-group { gap: 0.75rem; }
-    .auth-form { flex-direction: column; align-items: stretch; }
-    .auth-button { width: 100%; }
     .volume-slider { width: 100%; }
   }
   @media (max-width: 340px) {
-    .app-title { font-size: clamp(1.6rem, 10vw, 2rem); }
+    .app-title { font-size: clamp(1.2rem, 9vw, 1.6rem); }
   }
 </style>
