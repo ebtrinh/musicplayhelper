@@ -1146,6 +1146,10 @@ function hasNaturalGlyph(ns: StaveNote[]): boolean {
       msreCount,
       stackTrace: new Error().stack?.split('\n').slice(1, 4)
     });
+
+    // Clear octave assumption when generating new content
+    lastAssumedOctave = '';
+    
     // tiny local helpers
     const pick = <T,>(arr: T[]) => arr[Math.floor(Math.random() * arr.length)];
     const stripAccidentals = (ns: StaveNote[]) => {
@@ -1342,6 +1346,49 @@ function hasNaturalGlyph(ns: StaveNote[]): boolean {
     else if (acc === 'b' || acc === '♭') semitone -= 1;
     return (oct + 1) * 12 + semitone;
   }
+
+  // Extract just the note name without octave (e.g., "C4" -> "C", "F#5" -> "F#")
+  function getNoteNameOnly(noteWithOctave: string): string {
+    const m = noteWithOctave.match(/^([A-Ga-g][#♯b♭]?)/);
+    const result = m ? m[1].toUpperCase() : noteWithOctave.toUpperCase();
+    // Normalize sharp symbols: convert ♯ to #
+    return result.replace(/♯/g, '#').replace(/♭/g, 'b');
+  }
+
+  // Compare two notes ignoring octave (e.g., "C3" matches "C4")
+  function notesMatchIgnoringOctave(note1: string, note2: string): boolean {
+    const name1 = getNoteNameOnly(note1);
+    const name2 = getNoteNameOnly(note2);
+    
+    // Also check enharmonic equivalents (A# = Bb, etc.)
+    const enharmonicMap: Record<string, string[]> = {
+      'A#': ['A#', 'BB'],
+      'BB': ['A#', 'BB'], 
+      'C#': ['C#', 'DB'],
+      'DB': ['C#', 'DB'],
+      'D#': ['D#', 'EB'],
+      'EB': ['D#', 'EB'],
+      'F#': ['F#', 'GB'],
+      'GB': ['F#', 'GB'],
+      'G#': ['G#', 'AB'],
+      'AB': ['G#', 'AB']
+    };
+    
+    const equivalents1 = enharmonicMap[name1] || [name1];
+    const equivalents2 = enharmonicMap[name2] || [name2];
+    const match = name1 === name2 || equivalents1.some(e1 => equivalents2.includes(e1));
+    
+    console.log('🔍 OCTAVE-AGNOSTIC COMPARISON:', {
+      note1,
+      note2,
+      extracted1: name1,
+      extracted2: name2,
+      equivalents1,
+      equivalents2,
+      match
+    });
+    return match;
+  }
   function isRealNote(n: string): boolean {
     return /^[A-G][#♯b♭]?\d$/.test(n);
   }
@@ -1360,6 +1407,9 @@ function hasNaturalGlyph(ns: StaveNote[]): boolean {
 const OCT_STREAK_LIMIT = 6;       // accept after ~6 frames (~100–200 ms)
 let lastUpdate = 0;               // ms when we last accepted a pitch
 const STALE_MS = 1200;            // force accept if display hasn't moved for this long
+
+// Octave assumption tracking
+let lastAssumedOctave = '';       // Track when we assume an octave for note matching
 
 
 
@@ -1402,8 +1452,19 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
         if (isRealNote(note) && currentTargetIndex < target.length) {
           const targetLabel = line[currentTargetIndex] || '';
           console.log('🎯 NOTE COMPARISON: Microphone detected:', note, '| Target:', targetLabel);
+          console.log('🎯 Target array value:', target[currentTargetIndex], '| Canon of note:', canon(note));
           
-          if (canon(note) === target[currentTargetIndex]) {
+          // Check if notes match ignoring octave
+          if (notesMatchIgnoringOctave(note, targetLabel)) {
+            // Track if we assumed an octave (notes match but not exact)
+            if (canon(note) !== target[currentTargetIndex]) {
+              const targetOctave = targetLabel.match(/\d+$/)?.[0] || '4';
+              lastAssumedOctave = `Assumed ${targetLabel} (you played ${note})`;
+              console.log('🎵 OCTAVE ASSUMPTION:', lastAssumedOctave);
+            } else {
+              lastAssumedOctave = '';
+            }
+            
             // additionally, block an immediate match if this is the first note and equals previous first target
             if (currentTargetIndex === 0 && prevTargetFirst !== null && prevTargetFirst === target[0] && !haveGoneQuiet) {
               // wait for genuine new attack
@@ -1496,7 +1557,7 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
           haveGoneQuiet = true; // already quiet after last match
         } else if (freq && matchedFreq && isClearlyDifferent(freq, matchedFreq)) {
           gate = 'READY';
-        } else if (freq && isRealNote(note) && canon(note) !== target[i]) {
+        } else if (freq && isRealNote(note) && !notesMatchIgnoringOctave(note, line[i] || '')) {
           gate = 'READY';
         }
         break;
@@ -1531,6 +1592,9 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
       console.log('❌ No measures available in Random Song Mode - this should not happen');
       return;
     }
+
+    // Clear octave assumption when generating new content
+    lastAssumedOctave = '';
 
     // Pick a random starting measure
     const startMeasureIndex = Math.floor(Math.random() * measures.length);
@@ -2498,6 +2562,14 @@ function handlePianoNote(note: string, frequency: number) {
   // Check if the piano note matches the target note name (ignoring octave)
   const isMatch = pianoEquivalents.some(p => targetEquivalents.includes(p));
   if (isMatch) {
+    // Track octave assumption for display
+    const targetNote = line[renderState?.currentProgress || 0] || '';
+    if (note !== targetNote) {
+      lastAssumedOctave = `Assumed ${targetNote} (you played ${note})`;
+      console.log('🎹 OCTAVE ASSUMPTION:', lastAssumedOctave);
+    } else {
+      lastAssumedOctave = '';
+    }
     const matchedLabel = targetNoteName;
     gaEvent('correct_note', {
       index: renderState?.currentProgress || 0,
@@ -2923,6 +2995,9 @@ function handlePianoNote(note: string, frequency: number) {
         <span class="frequency-unit">Hz</span>
       </div>
       <div class="note-display">{note}</div>
+      {#if lastAssumedOctave}
+        <div class="octave-assumption">{lastAssumedOctave}</div>
+      {/if}
     </div>
 
     <div class="audio-controls">
@@ -3567,6 +3642,21 @@ function handlePianoNote(note: string, frequency: number) {
     font-weight: 700;
     color: #374151;
     margin-bottom: 1rem;
+  }
+
+  .octave-assumption {
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: #dc2626;
+    text-align: center;
+    margin-top: 0.5rem;
+    padding: 0.25rem 0.75rem;
+    background: rgba(220, 38, 38, 0.1);
+    border-radius: 0.375rem;
+    border: 1px solid rgba(220, 38, 38, 0.2);
+    max-width: 300px;
+    margin-left: auto;
+    margin-right: auto;
   }
 
   .audio-controls {
