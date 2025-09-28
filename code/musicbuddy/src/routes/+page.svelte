@@ -94,6 +94,7 @@ let allowFlats    = true;
   let currentSongTitle = '';
   let currentSongComposer = '';
   let isLoadingSong = false;
+  let selectedSongKey = 'Random'; // Key filter for Random Song Mode
   // Random Song Mode 8-note system
   const SONG_NOTE_CAP = 8;
   let songNotesCollected = 0;         // notes collected for current 8-note segment
@@ -1533,7 +1534,7 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
 
     // Pick a random starting measure
     const startMeasureIndex = Math.floor(Math.random() * measures.length);
-    console.log(`🎯 Starting from measure ${startMeasureIndex + 1} of ${measures.length}`);
+    console.log(`🎯 Random measure selection: Starting from measure ${startMeasureIndex + 1} of ${measures.length} total measures`);
 
     const collectedNotes: StaveNote[] = [];
     const collectedKeys: string[] = [];
@@ -1960,6 +1961,58 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
         return false;
       }
       
+      // Check if song matches selected key filter (group relative major/minor keys)
+      if (selectedSongKey !== 'Random' && measures.length > 0) {
+        const songKey = measures[0].key.split(' ')[0]; // Get key from first measure
+        
+        // Map keys to their key signatures (number of sharps/flats)
+        const keyToSignature = (key: string): string => {
+          const keyMap: Record<string, string> = {
+            // No accidentals (0 sharps/flats)
+            'C': '0', 'Am': '0',
+            // 1 sharp
+            'G': '1#', 'Em': '1#',
+            // 2 sharps
+            'D': '2#', 'Bm': '2#',
+            // 3 sharps
+            'A': '3#', 'F#m': '3#',
+            // 4 sharps
+            'E': '4#', 'C#m': '4#',
+            // 5 sharps
+            'B': '5#', 'G#m': '5#',
+            // 6 sharps
+            'F#': '6#', 'D#m': '6#',
+            // 7 sharps
+            'C#': '7#', 'A#m': '7#',
+            // 1 flat
+            'F': '1b', 'Dm': '1b',
+            // 2 flats
+            'Bb': '2b', 'Gm': '2b',
+            // 3 flats
+            'Eb': '3b', 'Cm': '3b',
+            // 4 flats
+            'Ab': '4b', 'Fm': '4b',
+            // 5 flats
+            'Db': '5b', 'Bbm': '5b',
+            // 6 flats
+            'Gb': '6b', 'Ebm': '6b',
+            // 7 flats
+            'Cb': '7b', 'Abm': '7b'
+          };
+          return keyMap[key] || 'unknown';
+        };
+        
+        const songSignature = keyToSignature(songKey);
+        const filterSignature = keyToSignature(selectedSongKey);
+        
+        if (songSignature !== filterSignature || songSignature === 'unknown') {
+          console.log(`❌ SKIPPED "${currentSongTitle}": Key ${songKey} (${songSignature}) doesn't match filter ${selectedSongKey} (${filterSignature})`);
+          measures = [];
+          return false;
+        }
+        console.log(`✅ KEY MATCH: "${currentSongTitle}" is in ${songKey} (${songSignature}) - matches filter ${selectedSongKey} (${filterSignature})`);
+      }
+      
       console.log(`📊 Song "${currentSongTitle}" has ${measures.length} measures`);
       
       // Log detailed measure analysis
@@ -2066,11 +2119,11 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
     showNoteDropdown = false;
     isLoadingSong = true;
 
-    // Try up to 5 songs to find one that parses successfully
-    let attempts = 0;
-    const maxAttempts = 5;
+    // Try for 5 seconds to find a song with the selected key
+    const startTime = Date.now();
+    const timeoutMs = 5000; // 5 seconds
     
-    while (attempts < maxAttempts) {
+    while (Date.now() - startTime < timeoutMs) {
       try {
         const row = await fetchRandomXMLFromPool();
         xmlText = row.musicxml;
@@ -2096,18 +2149,16 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
         }
         
         // Parsing failed, try another song
-        attempts++;
-        console.log(`🔄 Start attempt ${attempts}/${maxAttempts}: "${tempTitle}" failed to parse, trying another song`);
+        console.log(`🔄 "${tempTitle}" failed to parse or wrong key, trying another song`);
         
       } catch (error) {
         console.error('Error loading random song:', error);
-        attempts++;
       }
     }
     
-    // If we get here, we couldn't find a parseable song
+    // If we get here, we couldn't find a suitable song within 5 seconds
     isLoadingSong = false;
-    console.log('Could not find a parseable song after', maxAttempts, 'attempts.');
+    console.log('Could not find a suitable song within 5 seconds.');
     switchToRandomNoteMode();
   }
 
@@ -2117,11 +2168,11 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
     currentSongTitle = '';
     currentSongComposer = '';
     
-    // Try up to 5 songs to find one that parses successfully
-    let attempts = 0;
-    const maxAttempts = 5;
+    // Try for 5 seconds to find a song with the selected key
+    const startTime = Date.now();
+    const timeoutMs = 5000; // 5 seconds
     
-    while (attempts < maxAttempts) {
+    while (Date.now() - startTime < timeoutMs) {
       try {
         const row = await fetchRandomXMLFromPool();
         xmlText = row.musicxml;
@@ -2147,18 +2198,16 @@ const STALE_MS = 1200;            // force accept if display hasn't moved for th
         }
         
         // Parsing failed, try another song
-        attempts++;
-        console.log(`🔄 Next song attempt ${attempts}/${maxAttempts}: "${tempTitle}" failed to parse, trying another song`);
+        console.log(`🔄 "${tempTitle}" failed to parse or wrong key, trying another song`);
         
       } catch (error) {
         console.error('Error loading next random song:', error);
-        attempts++;
       }
     }
     
-    // If we get here, we couldn't find a parseable song
+    // If we get here, we couldn't find a suitable song within 5 seconds
     isLoadingSong = false;
-    console.log('Could not find a parseable song after', maxAttempts, 'attempts.');
+    console.log('Could not find a suitable song within 5 seconds.');
     // Stay in random song mode but show error state
     currentSongTitle = 'Error loading songs';
     currentSongComposer = 'Try again later';
@@ -2262,6 +2311,7 @@ type Prefs = {
   minDb?: number;
   randomSongMode?: boolean;
   autoNext?: boolean;
+  selectedSongKey?: string;
 };
 
 function getCurrentPrefs(): Prefs {
@@ -2278,7 +2328,8 @@ function getCurrentPrefs(): Prefs {
     bpm,
     minDb,
     randomSongMode,
-    autoNext
+    autoNext,
+    selectedSongKey
   };
 }
 
@@ -2300,6 +2351,7 @@ function applyPrefs(p: Prefs) {
   if (typeof p.minDb === 'number') minDb = p.minDb;
   if (typeof p.randomSongMode === 'boolean') randomSongMode = p.randomSongMode;
   if (typeof p.autoNext === 'boolean') autoNext = p.autoNext;
+  if (typeof p.selectedSongKey === 'string') selectedSongKey = p.selectedSongKey;
 
   // after applying prefs, regenerate the random staff so UI reflects them
   generateRandomLine();
@@ -2369,7 +2421,7 @@ $: if (prefsLoaded) {
   void selectedClef, selectedKeySig, selectedTS,
        enableHalves, enableEighths,
        useKeyOnly, allowNaturals, allowSharps, allowFlats,
-       bpm, minDb, randomSongMode, autoNext;
+       bpm, minDb, randomSongMode, autoNext, selectedSongKey;
   schedulePrefsSave();
 }
 
@@ -2577,6 +2629,34 @@ function handlePianoNote(note: string, frequency: number) {
                 {/each}
               </select>
             </label>
+
+            <label class="dropdown-control">
+              <span>Key Signature:</span>
+              <select bind:value={selectedSongKey} class="dropdown-select">
+                <option value="Random">Random</option>
+                <optgroup label="No accidentals">
+                  <option value="C">C major / A minor (♮)</option>
+                </optgroup>
+                <optgroup label="Sharps">
+                  <option value="G">G major / E minor (1♯)</option>
+                  <option value="D">D major / B minor (2♯)</option>
+                  <option value="A">A major / F# minor (3♯)</option>
+                  <option value="E">E major / C# minor (4♯)</option>
+                  <option value="B">B major / G# minor (5♯)</option>
+                  <option value="F#">F# major / D# minor (6♯)</option>
+                  <option value="C#">C# major / A# minor (7♯)</option>
+                </optgroup>
+                <optgroup label="Flats">
+                  <option value="F">F major / D minor (1♭)</option>
+                  <option value="Bb">B♭ major / G minor (2♭)</option>
+                  <option value="Eb">E♭ major / C minor (3♭)</option>
+                  <option value="Ab">A♭ major / F minor (4♭)</option>
+                  <option value="Db">D♭ major / B♭ minor (5♭)</option>
+                  <option value="Gb">G♭ major / E♭ minor (6♭)</option>
+                  <option value="Cb">C♭ major / A♭ minor (7♭)</option>
+                </optgroup>
+              </select>
+            </label>
             
             <label class="dropdown-toggle">
               <span>Auto-Next</span>
@@ -2734,6 +2814,30 @@ function handlePianoNote(note: string, frequency: number) {
       <div class="song-info">
         <h3 class="song-title">{currentSongTitle}</h3>
         <p class="song-composer">{currentSongComposer}</p>
+        {#if measures && measures.length > 0}
+          {@const songKey = measures[0].key.split(' ')[0]}
+          {@const keySignature = (() => {
+            const keyMap = {
+              'C': '♮', 'Am': '♮',
+              'G': '1♯', 'Em': '1♯',
+              'D': '2♯', 'Bm': '2♯', 
+              'A': '3♯', 'F#m': '3♯',
+              'E': '4♯', 'C#m': '4♯',
+              'B': '5♯', 'G#m': '5♯',
+              'F#': '6♯', 'D#m': '6♯',
+              'C#': '7♯', 'A#m': '7♯',
+              'F': '1♭', 'Dm': '1♭',
+              'Bb': '2♭', 'Gm': '2♭',
+              'Eb': '3♭', 'Cm': '3♭',
+              'Ab': '4♭', 'Fm': '4♭',
+              'Db': '5♭', 'Bbm': '5♭',
+              'Gb': '6♭', 'Ebm': '6♭',
+              'Cb': '7♭', 'Abm': '7♭'
+            };
+            return keyMap[songKey] || songKey;
+          })()}
+          <p class="song-key">Key: {songKey} ({keySignature})</p>
+        {/if}
       </div>
     {/if}
     
@@ -3180,6 +3284,17 @@ function handlePianoNote(note: string, frequency: number) {
     color: #64748b;
     margin: 0;
     font-style: italic;
+  }
+
+  .song-key {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: #059669;
+    margin: 0.25rem 0 0 0;
+    background: rgba(5, 150, 105, 0.1);
+    padding: 0.25rem 0.5rem;
+    border-radius: 0.375rem;
+    display: inline-block;
   }
 
   .staff-container {
