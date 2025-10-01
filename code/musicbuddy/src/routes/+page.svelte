@@ -90,7 +90,7 @@ let allowFlats    = true;
 
   // Mode system
   let randomSongMode = false; // false = Random Note Mode, true = Random Song Mode
-  let autoNext = false; // Controls auto-advance behavior
+  let autoNext = true; // Controls auto-advance behavior
   let currentSongTitle = '';
   let currentSongComposer = '';
   let isLoadingSong = false;
