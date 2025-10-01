@@ -16,19 +16,39 @@
 			<div class="content-card">
 				<h2 class="section-title">What is Music Buddy?</h2>
 				<p class="content-text">
-					Music Buddy is an interactive music learning application designed to help musicians of all levels improve their skills through real-time pitch detection and interactive exercises.
+					Music Buddy is an interactive music learning application that helps musicians practice sight-reading and pitch recognition through real-time microphone feedback. Play notes on your instrument and watch as they're detected and matched against the displayed staff notation.
 				</p>
 			</div>
 
 			<div class="content-card">
-				<h2 class="section-title">Features</h2>
+				<h2 class="section-title">Practice Modes</h2>
 				<ul class="feature-list">
-					<li>Real-time pitch detection using your microphone</li>
-					<li>Interactive staff notation with multiple clefs</li>
-					<li>Customizable key signatures and time signatures</li>
-					<li>Built-in metronome for rhythm practice</li>
-					<li>Preset songs and custom MusicXML support</li>
-					<li>Progress tracking and personalized exercises</li>
+					<li><strong>Random Song Mode:</strong> Practice with excerpts from real songs, automatically filtered to 8-note segments for focused learning</li>
+					<li><strong>Random Note Mode:</strong> Practice sight-reading with randomly generated note sequences</li>
+					<li><strong>Auto-Next:</strong> Automatically advance to the next exercise when completed, or disable for manual control</li>
+				</ul>
+			</div>
+
+			<div class="content-card">
+				<h2 class="section-title">Customization Options</h2>
+				<ul class="feature-list">
+					<li><strong>Multiple Clefs:</strong> Practice with treble, alto, or bass clef</li>
+					<li><strong>Key Signatures:</strong> All major and minor keys from C♭ to C♯ (7 flats to 7 sharps)</li>
+					<li><strong>Note Types:</strong> Toggle half notes, eighth notes, and quarter notes</li>
+					<li><strong>Accidental Control:</strong> Choose which accidentals to include (naturals, sharps, flats)</li>
+					<li><strong>Key-Only Mode:</strong> Practice notes without accidentals, using only the key signature</li>
+				</ul>
+			</div>
+
+			<div class="content-card">
+				<h2 class="section-title">Interactive Features</h2>
+				<ul class="feature-list">
+					<li><strong>Real-time Pitch Detection:</strong> Uses advanced YIN algorithm for accurate note recognition</li>
+					<li><strong>Visual Feedback:</strong> Notes turn green when played correctly</li>
+					<li><strong>Piano Keyboard:</strong> Click notes on the virtual piano for silent practice</li>
+					<li><strong>Built-in Metronome:</strong> Adjustable BPM for rhythm practice</li>
+					<li><strong>Octave Transposition:</strong> Shift exercises up or down to match your instrument's range</li>
+					<li><strong>Microphone Sensitivity:</strong> Adjustable threshold for different instruments and environments</li>
 				</ul>
 			</div>
 

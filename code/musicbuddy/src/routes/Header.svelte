@@ -55,11 +55,19 @@
 	}
 
 	.corner {
-		width: auto;
+		width: 120px;
 		height: auto;
+		display: flex;
+		align-items: center;
 	}
-	.corner.left { margin-right: 0.5rem; }
-	.corner.right { margin-left: 0.5rem; }
+	.corner.left { 
+		margin-right: 0.5rem; 
+		justify-content: flex-start;
+	}
+	.corner.right { 
+		margin-left: 0.5rem; 
+		justify-content: flex-end;
+	}
 
 	.corner a {
 		display: flex;
@@ -190,6 +198,7 @@
 	/* Responsive: mobile menu */
 	@media (max-width: 768px) {
 		header { padding: 0.75rem 0.75rem; border-radius: 0 0 0.75rem 0.75rem; }
+		.corner { width: auto; }
 		.menu-toggle { display: inline-flex; }
 		nav {
 			position: absolute;
